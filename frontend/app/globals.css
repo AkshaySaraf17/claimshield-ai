@@ -1,0 +1,64 @@
+@import url("https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background-color: #f6f3ec;
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+/* A thin ledger rule — used as a signature divider between casework lines,
+   never as decoration. Mirrors the horizontal rules on a real EOB. */
+.ledger-rule {
+  background-image: repeating-linear-gradient(
+    to right,
+    #a4b2bd 0,
+    #a4b2bd 4px,
+    transparent 4px,
+    transparent 9px
+  );
+  height: 1px;
+}
+
+/* ── Entrance animation ── */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-entrance {
+  animation: fadeUp 0.45s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+.stagger-0 { animation-delay: 0ms; }
+.stagger-1 { animation-delay: 90ms; }
+.stagger-2 { animation-delay: 180ms; }
+.stagger-3 { animation-delay: 270ms; }
+.stagger-4 { animation-delay: 360ms; }
+.stagger-5 { animation-delay: 450ms; }
+
+/* ── 3D transform utilities ── */
+.perspective-1200 { perspective: 1200px; }
+.preserve-3d { transform-style: preserve-3d; }
+.backface-hide { backface-visibility: hidden; }
+.rotate-y-180 { transform: rotateY(180deg); }
+
+/* ── Feature card filter transitions ── */
+.card-enter {
+  transition: opacity 0.3s cubic-bezier(0.2, 0.9, 0.3, 1),
+              transform 0.3s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.card-hidden {
+  opacity: 0;
+  transform: scale(0.95) translateY(8px);
+  pointer-events: none;
+  position: absolute;
+}
