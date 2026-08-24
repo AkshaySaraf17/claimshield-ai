@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     supabase_service_key: str | None = None
 
     # --- App ---
-    cors_allow_origins: str = "http://localhost:3000"
+    cors_allow_origins: str = "http://localhost:3000,https://*.vercel.app"
 
 
 settings = Settings()
