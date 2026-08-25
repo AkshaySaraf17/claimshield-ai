@@ -18,6 +18,8 @@ class LLMClient:
             return await self._anthropic(system, user, json_mode)
         elif settings.llm_provider == "openai":
             return await self._openai(system, user, json_mode)
+        elif settings.llm_provider == "gemini":
+            return await self._gemini(system, user, json_mode)
         raise ValueError(f"Unknown LLM_PROVIDER: {settings.llm_provider}")
 
     async def _ollama(self, system: str, user: str, json_mode: bool) -> str:
@@ -75,6 +77,28 @@ class LLMClient:
             resp = await client.post(
                 f"{base}/chat/completions",
                 headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+
+
+    async def _gemini(self, system: str, user: str, json_mode: bool) -> str:
+        if not settings.gemini_api_key:
+            raise RuntimeError("GEMINI_API_KEY not set")
+        payload = {
+            "model": settings.gemini_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                headers={"Authorization": f"Bearer {settings.gemini_api_key}"},
                 json=payload,
             )
             resp.raise_for_status()
