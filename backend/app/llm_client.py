@@ -70,9 +70,10 @@ class LLMClient:
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        base = settings.openai_base_url.rstrip("/")
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
+                f"{base}/chat/completions",
                 headers={"Authorization": f"Bearer {settings.openai_api_key}"},
                 json=payload,
             )

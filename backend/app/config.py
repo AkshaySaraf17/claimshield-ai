@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-6"
 
     openai_api_key: str | None = None
+    openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
 
     # --- Supabase ---
