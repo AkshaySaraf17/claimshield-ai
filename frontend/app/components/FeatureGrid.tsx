@@ -155,7 +155,7 @@ export default function FeatureGrid() {
           const border = 0.15 + p * 0.4;
           const py = 12 + p * 4;
           search.style.backdropFilter = `blur(${blur}px)`;
-          search.style.webkitBackdropFilter = `blur(${blur}px)`;
+          search.style.setProperty("-webkit-backdrop-filter", `blur(${blur}px)`);
           search.style.borderColor = `rgba(164,178,189,${border})`;
           search.style.paddingTop = `${py}px`;
           search.style.paddingBottom = `${py}px`;
