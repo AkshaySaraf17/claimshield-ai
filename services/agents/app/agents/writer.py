@@ -32,6 +32,9 @@ Amount denied: {amount_display}
 Rule check results:
 {_format_rules(state.get('rule_results'))}
 
+Specialist analysis:
+{state.get('specialist_analysis') or 'No specialist analysis available.'}
+
 Policy evidence supporting reversal:
 {state.get('retrieved_policy_evidence') or 'No evidence found — manual research needed'}
 

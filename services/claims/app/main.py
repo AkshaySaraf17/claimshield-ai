@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import select, update
 
 from claimshield_common.auth import CurrentUser, Role, require_role
@@ -18,6 +19,7 @@ from claimshield_common.models import Claim
 from claimshield_common.problem import problem_response
 from claimshield_common.tenancy import bind_tenant_to_session, set_current_tenant
 
+from .edi835 import parse_835, era_to_denial_summaries
 from .schemas import (
     ALLOWED_TRANSITIONS,
     ClaimCreate,
@@ -139,6 +141,26 @@ async def update_claim(claim_id: UUID, body: ClaimUpdate, user: CurrentUser):
         await session.commit()
         await session.refresh(claim)
         return claim
+
+
+class EDI835Upload(BaseModel):
+    raw_edi: str
+
+
+@app.post("/api/v1/claims/edi835")
+async def ingest_edi835(body: EDI835Upload, user: CurrentUser):
+    """Parse an EDI 835 remittance and return structured denial summaries."""
+    era = parse_835(body.raw_edi)
+    if not era.claims:
+        return problem_response(422, "No Claims Found", detail="No CLP segments found in the EDI 835 data")
+    summaries = era_to_denial_summaries(era)
+    return {
+        "payer": era.payer_name,
+        "check_number": era.check_number,
+        "total_paid_cents": era.total_paid_cents,
+        "claims_parsed": len(summaries),
+        "summaries": summaries,
+    }
 
 
 @app.patch("/api/v1/claims/{claim_id}/status", response_model=ClaimResponse)

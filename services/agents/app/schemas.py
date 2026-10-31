@@ -25,6 +25,11 @@ class AppealState(TypedDict, total=False):
     # Researcher output
     retrieved_policy_evidence: Optional[str]
 
+    # Specialist routing
+    denial_category: Optional[str]
+    specialist_analysis: Optional[str]
+    documentation_gaps: Optional[list[str]]
+
     # Writer output
     final_appeal_letter: Optional[str]
     writer_confidence: Optional[float]
