@@ -4778,3 +4778,214 @@ async def payer_sla(request: Request):
         })
     result.sort(key=lambda x: x["total_claims"], reverse=True)
     return result
+
+
+# ── Claim Timeline ──────────────────────────────────────────────────────
+
+@app.get("/api/v1/claims/{claim_id}/timeline")
+async def claim_timeline(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        claim = (await session.execute(
+            select(Claim).where(Claim.id == claim_id, Claim.tenant_id == tenant_id)
+        )).scalar_one_or_none()
+        if not claim:
+            return JSONResponse({"detail": "not found"}, 404)
+
+        events: list[dict] = []
+
+        events.append({
+            "type": "claim_created",
+            "timestamp": claim.created_at.isoformat(),
+            "detail": f"Claim {claim.claim_number or claim.id[:8]} created",
+        })
+
+        notes = (await session.execute(
+            select(ClaimNote).where(ClaimNote.claim_id == claim_id, ClaimNote.tenant_id == tenant_id)
+        )).scalars().all()
+        for n in notes:
+            events.append({
+                "type": "note",
+                "timestamp": n.created_at.isoformat(),
+                "detail": n.content[:120],
+                "actor": TEAM_MEMBERS.get(n.author_id, n.author_id),
+            })
+
+        comments = (await session.execute(
+            select(ClaimComment).where(ClaimComment.claim_id == claim_id, ClaimComment.tenant_id == tenant_id)
+        )).scalars().all()
+        for c in comments:
+            events.append({
+                "type": "comment",
+                "timestamp": c.created_at.isoformat(),
+                "detail": c.body[:120],
+                "actor": TEAM_MEMBERS.get(c.author_id, c.author_id),
+            })
+
+        appeals = (await session.execute(
+            select(Appeal).where(Appeal.claim_id == claim_id, Appeal.tenant_id == tenant_id)
+        )).scalars().all()
+        for a in appeals:
+            events.append({
+                "type": "appeal_created",
+                "timestamp": a.created_at.isoformat(),
+                "detail": f"Appeal v{a.version} drafted (confidence: {a.confidence})",
+            })
+            if a.approved_at:
+                events.append({
+                    "type": "appeal_approved",
+                    "timestamp": a.approved_at.isoformat(),
+                    "detail": f"Appeal v{a.version} approved",
+                    "actor": TEAM_MEMBERS.get(a.approved_by or "", a.approved_by),
+                })
+
+        costs = (await session.execute(
+            select(ClaimCost).where(ClaimCost.claim_id == claim_id, ClaimCost.tenant_id == tenant_id)
+        )).scalars().all()
+        for co in costs:
+            events.append({
+                "type": "cost",
+                "timestamp": co.created_at.isoformat(),
+                "detail": f"{co.category}: ${co.amount_cents / 100:.2f} — {co.description[:80]}",
+                "actor": TEAM_MEMBERS.get(co.recorded_by, co.recorded_by),
+            })
+
+        responses = (await session.execute(
+            select(PayerResponse).where(PayerResponse.claim_id == claim_id, PayerResponse.tenant_id == tenant_id)
+        )).scalars().all()
+        for r in responses:
+            events.append({
+                "type": "payer_response",
+                "timestamp": r.received_at.isoformat(),
+                "detail": f"{r.response_type}: {r.response_text[:80] if r.response_text else '—'}",
+            })
+
+        assignments = (await session.execute(
+            select(ClaimAssignment).where(ClaimAssignment.claim_id == claim_id, ClaimAssignment.tenant_id == tenant_id)
+        )).scalars().all()
+        for a in assignments:
+            events.append({
+                "type": "assignment",
+                "timestamp": a.created_at.isoformat(),
+                "detail": f"Assigned to {TEAM_MEMBERS.get(a.assigned_to, a.assigned_to)}",
+                "actor": TEAM_MEMBERS.get(a.assigned_by, a.assigned_by),
+            })
+
+        events.sort(key=lambda e: e["timestamp"])
+    return events
+
+
+# ── Bulk Tag Manager ────────────────────────────────────────────────────
+
+class BulkTagRequest(BaseModel):
+    claim_ids: list[str]
+    tag: str
+
+@app.post("/api/v1/tags/bulk-add")
+async def bulk_add_tag(body: BulkTagRequest, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    added = 0
+    async with request.app.state.session_factory() as session:
+        for cid in body.claim_ids:
+            existing = (await session.execute(
+                select(ClaimTag).where(
+                    ClaimTag.claim_id == cid,
+                    ClaimTag.tenant_id == tenant_id,
+                    ClaimTag.tag == body.tag,
+                )
+            )).scalar_one_or_none()
+            if not existing:
+                session.add(ClaimTag(
+                    tenant_id=tenant_id,
+                    claim_id=cid,
+                    tag=body.tag,
+                    created_by=user_id,
+                ))
+                added += 1
+        await session.commit()
+        await _write_audit(session, tenant_id, user_id, "tag.bulk_add", "claim_tag", body.tag, {"claim_count": len(body.claim_ids), "tag": body.tag})
+    return {"added": added, "tag": body.tag, "claim_count": len(body.claim_ids)}
+
+
+@app.post("/api/v1/tags/bulk-remove")
+async def bulk_remove_tag(body: BulkTagRequest, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    removed = 0
+    async with request.app.state.session_factory() as session:
+        for cid in body.claim_ids:
+            tag_row = (await session.execute(
+                select(ClaimTag).where(
+                    ClaimTag.claim_id == cid,
+                    ClaimTag.tenant_id == tenant_id,
+                    ClaimTag.tag == body.tag,
+                )
+            )).scalar_one_or_none()
+            if tag_row:
+                await session.delete(tag_row)
+                removed += 1
+        await session.commit()
+        await _write_audit(session, tenant_id, user_id, "tag.bulk_remove", "claim_tag", body.tag, {"claim_count": len(body.claim_ids), "tag": body.tag})
+    return {"removed": removed, "tag": body.tag, "claim_count": len(body.claim_ids)}
+
+
+@app.get("/api/v1/tags/summary")
+async def tag_summary(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        rows = (await session.execute(
+            select(ClaimTag.tag, func.count(ClaimTag.id).label("count"))
+            .where(ClaimTag.tenant_id == tenant_id)
+            .group_by(ClaimTag.tag)
+            .order_by(func.count(ClaimTag.id).desc())
+        )).all()
+    return [{"tag": r.tag, "count": r.count} for r in rows]
+
+
+# ── User Workload Summary ──────────────────────────────────────────────
+
+@app.get("/api/v1/analytics/workload")
+async def workload_summary(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        assignments = (await session.execute(
+            select(ClaimAssignment).where(ClaimAssignment.tenant_id == tenant_id)
+        )).scalars().all()
+
+        claims_by_id: dict[str, Claim] = {}
+        if assignments:
+            claim_ids = list({a.claim_id for a in assignments})
+            claims_list = (await session.execute(
+                select(Claim).where(Claim.id.in_(claim_ids))
+            )).scalars().all()
+            claims_by_id = {c.id: c for c in claims_list}
+
+    latest: dict[str, str] = {}
+    for a in sorted(assignments, key=lambda x: x.created_at):
+        latest[a.claim_id] = a.assigned_to
+
+    by_user: dict[str, dict] = {}
+    for claim_id, user_id in latest.items():
+        claim = claims_by_id.get(claim_id)
+        if not claim:
+            continue
+        if user_id not in by_user:
+            by_user[user_id] = {
+                "user_id": user_id,
+                "user_name": TEAM_MEMBERS.get(user_id, user_id),
+                "total": 0,
+                "active": 0,
+                "pending_review": 0,
+                "total_value_cents": 0,
+            }
+        u = by_user[user_id]
+        u["total"] += 1
+        if claim.status in ("pending_review", "in_progress", "needs_review", "approved"):
+            u["active"] += 1
+        if claim.status == "pending_review":
+            u["pending_review"] += 1
+        u["total_value_cents"] += claim.amount_denied_cents or 0
+
+    result = sorted(by_user.values(), key=lambda x: x["active"], reverse=True)
+    return result
