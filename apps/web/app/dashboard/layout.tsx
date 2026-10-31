@@ -17,6 +17,8 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard/reports", label: "Reports" },
   { href: "/dashboard/batch-appeals", label: "Batch" },
   { href: "/dashboard/import", label: "Import" },
+  { href: "/dashboard/pipeline", label: "Pipeline" },
+  { href: "/dashboard/alerts", label: "Alerts" },
   { href: "/dashboard/audit", label: "Audit Log" },
   { href: "/dashboard/settings", label: "Settings" },
 ];

@@ -1815,3 +1815,111 @@ async def recovery_tracker(request: Request, period_days: int = Query(default=90
         "total_claims": len(claims),
         "weekly_trend": weeks,
     }
+
+
+# ── Claim Workflow Pipeline ──────────────────────────────────────────
+
+PIPELINE_STAGES = [
+    "pending_review",
+    "in_progress",
+    "needs_review",
+    "approved",
+    "sent",
+    "won",
+    "lost",
+    "cancelled",
+]
+
+
+@app.get("/api/v1/analytics/pipeline")
+async def claim_pipeline(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        q = select(Claim).where(Claim.tenant_id == tenant_id)
+        result = await session.execute(q)
+        claims = result.scalars().all()
+
+    stages: dict[str, list[dict]] = {s: [] for s in PIPELINE_STAGES}
+    for c in claims:
+        status = c.status or "pending_review"
+        if status not in stages:
+            stages[status] = []
+        stages[status].append({
+            "id": c.id,
+            "claim_number": c.claim_number,
+            "payer": c.payer_name,
+            "denial_code": c.denial_code,
+            "amount_cents": c.amount_denied_cents or 0,
+            "days_old": (datetime.utcnow() - c.created_at).days if c.created_at else 0,
+        })
+
+    return {
+        "stages": [
+            {
+                "name": s,
+                "label": s.replace("_", " ").title(),
+                "count": len(stages.get(s, [])),
+                "total_cents": sum(c["amount_cents"] for c in stages.get(s, [])),
+                "claims": stages.get(s, []),
+            }
+            for s in PIPELINE_STAGES
+        ],
+    }
+
+
+# ── Alerts / Notifications ───────────────────────────────────────────
+
+@app.get("/api/v1/alerts")
+async def get_alerts(request: Request):
+    tenant_id = _get_tenant_id(request)
+    now = datetime.utcnow()
+
+    async with app.state.session_factory() as session:
+        q = select(Claim).where(Claim.tenant_id == tenant_id)
+        result = await session.execute(q)
+        claims = result.scalars().all()
+
+        aq = select(Appeal).where(Appeal.tenant_id == tenant_id, Appeal.needs_review == True)
+        ar = await session.execute(aq)
+        pending_appeals = ar.scalars().all()
+
+    alerts: list[dict] = []
+
+    for c in claims:
+        if c.filing_deadline:
+            days_left = (c.filing_deadline - now).days
+            if days_left <= 7 and days_left >= 0 and c.status not in ("won", "lost", "cancelled", "sent"):
+                alerts.append({
+                    "type": "deadline_approaching",
+                    "severity": "critical" if days_left <= 3 else "warning",
+                    "title": f"Filing deadline in {days_left} day{'s' if days_left != 1 else ''}",
+                    "detail": f"{c.claim_number or c.id[:8]} — {c.payer_name}",
+                    "claim_id": c.id,
+                    "timestamp": now.isoformat(),
+                })
+
+        if c.status == "pending_review":
+            age_days = (now - c.created_at).days if c.created_at else 0
+            if age_days >= 5:
+                alerts.append({
+                    "type": "stale_claim",
+                    "severity": "info" if age_days < 14 else "warning",
+                    "title": f"Claim pending review for {age_days} days",
+                    "detail": f"{c.claim_number or c.id[:8]} — {c.payer_name}",
+                    "claim_id": c.id,
+                    "timestamp": now.isoformat(),
+                })
+
+    for ap in pending_appeals:
+        alerts.append({
+            "type": "appeal_needs_review",
+            "severity": "info",
+            "title": "Appeal needs review",
+            "detail": f"Appeal {ap.id[:8]} for claim {ap.claim_id[:8]}",
+            "claim_id": ap.claim_id,
+            "appeal_id": ap.id,
+            "timestamp": now.isoformat(),
+        })
+
+    alerts.sort(key=lambda a: {"critical": 0, "warning": 1, "info": 2}.get(a["severity"], 3))
+    return alerts
