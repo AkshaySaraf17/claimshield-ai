@@ -75,20 +75,27 @@ export default function ClaimDetailPage() {
   const [auditEntries, setAuditEntries] = useState<
     { id: number; action: string; created_at: string; actor_id: string }[]
   >([]);
+  const [notes, setNotes] = useState<
+    { id: string; author_id: string; content: string; created_at: string }[]
+  >([]);
+  const [newNote, setNewNote] = useState("");
+  const [addingNote, setAddingNote] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [claimRes, appealsRes, auditRes] = await Promise.all([
+      const [claimRes, appealsRes, auditRes, notesRes] = await Promise.all([
         fetch(`/api/v1/claims/${claimId}`),
         fetch(`/api/v1/appeals?claim_id=${claimId}`),
         fetch(`/api/v1/audit/entries?resource_id=${claimId}&limit=20`),
+        fetch(`/api/v1/claims/${claimId}/notes`),
       ]);
       if (!claimRes.ok) throw new Error(`Claim not found: ${claimRes.status}`);
       setClaim(await claimRes.json());
       if (appealsRes.ok) setAppeals(await appealsRes.json());
       if (auditRes.ok) setAuditEntries(await auditRes.json());
+      if (notesRes.ok) setNotes(await notesRes.json());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load claim");
     } finally {
@@ -331,6 +338,61 @@ export default function ClaimDetailPage() {
                     </pre>
                   </div>
                 )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Notes */}
+      <div className="mt-8">
+        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-ink-500">
+          Notes ({notes.length})
+        </h2>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (!newNote.trim()) return;
+            setAddingNote(true);
+            try {
+              const res = await fetch(`/api/v1/claims/${claimId}/notes`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ content: newNote }),
+              });
+              if (res.ok) {
+                setNewNote("");
+                await fetchData();
+              }
+            } finally {
+              setAddingNote(false);
+            }
+          }}
+          className="mb-3 flex gap-2"
+        >
+          <input
+            type="text"
+            value={newNote}
+            onChange={(e) => setNewNote(e.target.value)}
+            placeholder="Add a note..."
+            className="flex-1 rounded border border-ink-300/50 px-3 py-1.5 text-sm focus:border-ledger-500 focus:outline-none focus:ring-1 focus:ring-ledger-500"
+          />
+          <button
+            type="submit"
+            disabled={addingNote || !newNote.trim()}
+            className="rounded bg-ink-950 px-3 py-1.5 text-xs font-medium text-white hover:bg-ink-900 disabled:opacity-50"
+          >
+            {addingNote ? "Adding..." : "Add note"}
+          </button>
+        </form>
+        {notes.length > 0 && (
+          <div className="space-y-2">
+            {notes.map((note) => (
+              <div key={note.id} className="rounded border border-ink-300/20 bg-white px-4 py-3">
+                <p className="text-sm text-ink-700">{note.content}</p>
+                <p className="mt-1 text-xs text-ink-400">
+                  by {note.author_id} &middot; {new Date(note.created_at).toLocaleString()}
+                </p>
               </div>
             ))}
           </div>

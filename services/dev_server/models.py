@@ -81,6 +81,17 @@ class Appeal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
 
 
+class ClaimNote(Base):
+    __tablename__ = "claim_notes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    claim_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    author_id: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 

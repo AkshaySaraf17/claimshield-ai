@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, Tenant, Clinic, Claim, Appeal, AuditLog
+from .models import Base, Tenant, Clinic, Claim, Appeal, ClaimNote, AuditLog
 from .seed import DEV_TENANT_ID, DEV_CLINIC_ID, DEV_USER_ID, build_seed_objects
 
 import sys
@@ -850,3 +850,90 @@ async def batch_transition(body: BatchTransition, request: Request):
         await session.commit()
 
     return {"results": results}
+
+
+# ── Denial Codes Reference ──────────────────────────────────────────────
+
+DENIAL_CODES = [
+    {"code": "CO-4", "group": "CO", "reason": "4", "description": "The procedure code is inconsistent with the modifier used or a required modifier is missing.", "category": "Coding", "source": "CMS CARC List"},
+    {"code": "CO-16", "group": "CO", "reason": "16", "description": "Claim/service lacks information or has submission/billing error(s).", "category": "Information", "source": "CMS CARC List"},
+    {"code": "CO-18", "group": "CO", "reason": "18", "description": "Exact duplicate claim/service.", "category": "Duplicate", "source": "CMS CARC List"},
+    {"code": "CO-29", "group": "CO", "reason": "29", "description": "The time limit for filing has expired.", "category": "Timely Filing", "source": "CMS CARC List"},
+    {"code": "CO-45", "group": "CO", "reason": "45", "description": "Charge exceeds fee schedule/maximum allowable or contracted/legislated fee arrangement.", "category": "Fee Schedule", "source": "CMS CARC List"},
+    {"code": "CO-50", "group": "CO", "reason": "50", "description": "These are non-covered services because this is not deemed a 'medical necessity' by the payer.", "category": "Medical Necessity", "source": "CMS CARC List"},
+    {"code": "CO-97", "group": "CO", "reason": "97", "description": "The benefit for this service is included in the payment/allowance for another service/procedure that has already been adjudicated.", "category": "Bundling", "source": "CMS CARC List"},
+    {"code": "CO-109", "group": "CO", "reason": "109", "description": "Claim/service not covered by this payer/contractor. You must send the claim/service to the correct payer/contractor.", "category": "Coverage", "source": "CMS CARC List"},
+    {"code": "CO-197", "group": "CO", "reason": "197", "description": "Precertification/authorization/notification/pre-treatment absent.", "category": "Authorization", "source": "CMS CARC List"},
+    {"code": "CO-204", "group": "CO", "reason": "204", "description": "This service/equipment/drug is not covered under the patient's current benefit plan.", "category": "Coverage", "source": "CMS CARC List"},
+    {"code": "CO-236", "group": "CO", "reason": "236", "description": "This procedure or procedure/modifier combination is not compatible with another procedure or procedure/modifier combination provided on the same day.", "category": "Coding", "source": "CMS CARC List"},
+    {"code": "PR-1", "group": "PR", "reason": "1", "description": "Deductible amount.", "category": "Patient Responsibility", "source": "CMS CARC List"},
+    {"code": "PR-2", "group": "PR", "reason": "2", "description": "Coinsurance amount.", "category": "Patient Responsibility", "source": "CMS CARC List"},
+    {"code": "PR-3", "group": "PR", "reason": "3", "description": "Co-payment amount.", "category": "Patient Responsibility", "source": "CMS CARC List"},
+    {"code": "PR-96", "group": "PR", "reason": "96", "description": "Non-covered charge(s). At least one Remark Code must be provided.", "category": "Coverage", "source": "CMS CARC List"},
+    {"code": "OA-23", "group": "OA", "reason": "23", "description": "The impact of prior payer(s) adjudication including payments and/or adjustments.", "category": "Coordination of Benefits", "source": "CMS CARC List"},
+]
+
+
+@app.get("/api/v1/denial-codes")
+async def list_denial_codes(search: str = Query("", max_length=100)):
+    if not search:
+        return DENIAL_CODES
+    q = search.lower()
+    return [
+        c for c in DENIAL_CODES
+        if q in c["code"].lower()
+        or q in c["description"].lower()
+        or q in c["category"].lower()
+    ]
+
+
+# ── Claim Notes ─────────────────────────────────────────────────────────
+
+class NoteCreate(BaseModel):
+    content: str
+
+
+@app.get("/api/v1/claims/{claim_id}/notes")
+async def list_notes(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        q = (
+            select(ClaimNote)
+            .where(ClaimNote.claim_id == claim_id, ClaimNote.tenant_id == tenant_id)
+            .order_by(ClaimNote.created_at.desc())
+        )
+        result = await session.execute(q)
+        notes = result.scalars().all()
+        return [
+            {
+                "id": n.id,
+                "claim_id": n.claim_id,
+                "author_id": n.author_id,
+                "content": n.content,
+                "created_at": n.created_at.isoformat() if n.created_at else None,
+            }
+            for n in notes
+        ]
+
+
+@app.post("/api/v1/claims/{claim_id}/notes", status_code=201)
+async def create_note(claim_id: str, body: NoteCreate, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with app.state.session_factory() as session:
+        note = ClaimNote(
+            tenant_id=tenant_id,
+            claim_id=claim_id,
+            author_id=user_id,
+            content=body.content,
+        )
+        session.add(note)
+        await _write_audit(session, tenant_id, user_id, "note.created", "claim", claim_id, {"note_id": note.id})
+        await session.commit()
+        return {
+            "id": note.id,
+            "claim_id": note.claim_id,
+            "author_id": note.author_id,
+            "content": note.content,
+            "created_at": note.created_at.isoformat() if note.created_at else None,
+        }
