@@ -24,6 +24,8 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard/assignments", label: "Assign" },
   { href: "/dashboard/activity", label: "Activity" },
   { href: "/dashboard/duplicates", label: "Dupes" },
+  { href: "/dashboard/rules", label: "Rules" },
+  { href: "/dashboard/workqueue", label: "Queue" },
   { href: "/dashboard/audit", label: "Audit Log" },
   { href: "/dashboard/settings", label: "Settings" },
 ];

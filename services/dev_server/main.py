@@ -146,6 +146,94 @@ async def health():
     return {"status": "ok", "mode": "standalone-sqlite"}
 
 
+@app.get("/api/v1/rules/config")
+async def rules_config():
+    transitions = {
+        status: sorted(targets) for status, targets in ALLOWED_TRANSITIONS.items()
+    }
+    code_mappings = [
+        {"denial_code": code, "category": cat}
+        for code, cat in sorted(DENIAL_CODE_TO_CATEGORY.items())
+    ]
+    pipeline_stages = [
+        {"name": s, "label": s.replace("_", " ").title()}
+        for s in PIPELINE_STAGES
+    ]
+    return {
+        "transitions": transitions,
+        "denial_code_mappings": code_mappings,
+        "pipeline_stages": pipeline_stages,
+        "appeal_template_categories": sorted(APPEAL_TEMPLATES.keys()),
+    }
+
+
+@app.get("/api/v1/workqueue")
+async def workqueue(request: Request):
+    tenant_id = _get_tenant_id(request)
+    now = datetime.utcnow()
+
+    async with app.state.session_factory() as session:
+        q = select(Claim).where(
+            Claim.tenant_id == tenant_id,
+            Claim.status.in_(["pending_review", "in_progress", "needs_review"]),
+        ).order_by(Claim.created_at.asc())
+        result = await session.execute(q)
+        claims = result.scalars().all()
+
+        aq = select(Appeal).where(
+            Appeal.tenant_id == tenant_id,
+            Appeal.needs_review == True,
+        )
+        ar = await session.execute(aq)
+        pending_appeals = {a.claim_id: a.id for a in ar.scalars().all()}
+
+    items = []
+    for c in claims:
+        urgency = 0
+        reasons = []
+
+        if c.filing_deadline:
+            days_left = (c.filing_deadline - now).days
+            if days_left <= 3:
+                urgency += 100
+                reasons.append(f"deadline in {days_left}d")
+            elif days_left <= 7:
+                urgency += 50
+                reasons.append(f"deadline in {days_left}d")
+
+        age_days = (now - c.created_at).days if c.created_at else 0
+        if age_days >= 14:
+            urgency += 30
+            reasons.append(f"{age_days}d old")
+        elif age_days >= 7:
+            urgency += 15
+            reasons.append(f"{age_days}d old")
+
+        if c.status == "needs_review":
+            urgency += 20
+            reasons.append("needs review")
+
+        if c.id in pending_appeals:
+            urgency += 10
+            reasons.append("appeal pending")
+
+        if c.amount_denied_cents and c.amount_denied_cents >= 1000000:
+            urgency += 25
+            reasons.append("high value")
+
+        items.append({
+            **_claim_dict(c),
+            "urgency_score": urgency,
+            "urgency_reasons": reasons,
+            "has_pending_appeal": c.id in pending_appeals,
+            "age_days": age_days,
+            "allowed_transitions": sorted(ALLOWED_TRANSITIONS.get(c.status, set())),
+        })
+
+    items.sort(key=lambda x: x["urgency_score"], reverse=True)
+    return {"items": items, "total": len(items)}
+
+
 @app.post("/api/v1/claims", status_code=201)
 async def create_claim(body: ClaimCreate, request: Request):
     tenant_id = _get_tenant_id(request)
