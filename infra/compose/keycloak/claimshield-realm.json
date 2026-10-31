@@ -1,0 +1,131 @@
+{
+  "realm": "claimshield",
+  "enabled": true,
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "sslRequired": "none",
+  "roles": {
+    "realm": [
+      { "name": "patient", "description": "Patient — views own claims and appeals" },
+      { "name": "biller", "description": "Biller — submits and manages claims" },
+      { "name": "coder", "description": "Medical coder — assigns diagnosis/procedure codes" },
+      { "name": "physician_reviewer", "description": "Physician reviewer — reviews clinical documentation" },
+      { "name": "clinic_admin", "description": "Clinic administrator — manages clinic settings and users" },
+      { "name": "auditor", "description": "Auditor — read-only access to audit trail" },
+      { "name": "platform_admin", "description": "Platform admin — cross-tenant management" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "claimshield-web",
+      "name": "ClaimShield Web App",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://localhost:80/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://localhost"
+      ],
+      "protocol": "openid-connect",
+      "defaultClientScopes": [
+        "openid",
+        "profile",
+        "email"
+      ],
+      "protocolMappers": [
+        {
+          "name": "tenant_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "tenant_id",
+            "claim.name": "tenant_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "realm_roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "claimshield-api",
+      "name": "ClaimShield API (confidential)",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "claimshield-api-dev-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "protocol": "openid-connect",
+      "defaultClientScopes": [
+        "openid",
+        "profile",
+        "email"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "demo-biller",
+      "email": "biller@demo.claimshield.local",
+      "enabled": true,
+      "firstName": "Demo",
+      "lastName": "Biller",
+      "credentials": [
+        { "type": "password", "value": "demo123", "temporary": false }
+      ],
+      "realmRoles": ["biller"],
+      "attributes": {
+        "tenant_id": ["00000000-0000-0000-0000-000000000001"]
+      }
+    },
+    {
+      "username": "demo-admin",
+      "email": "admin@demo.claimshield.local",
+      "enabled": true,
+      "firstName": "Demo",
+      "lastName": "Admin",
+      "credentials": [
+        { "type": "password", "value": "demo123", "temporary": false }
+      ],
+      "realmRoles": ["platform_admin", "clinic_admin"],
+      "attributes": {
+        "tenant_id": ["00000000-0000-0000-0000-000000000001"]
+      }
+    },
+    {
+      "username": "demo-auditor",
+      "email": "auditor@demo.claimshield.local",
+      "enabled": true,
+      "firstName": "Demo",
+      "lastName": "Auditor",
+      "credentials": [
+        { "type": "password", "value": "demo123", "temporary": false }
+      ],
+      "realmRoles": ["auditor"],
+      "attributes": {
+        "tenant_id": ["00000000-0000-0000-0000-000000000001"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,99 @@
+# Test stack — separate project name, ports, and database so dev and test can run side by side.
+# Usage: docker compose -p cs-test -f test.yml up -d
+
+x-common: &common
+  restart: "no"
+  logging:
+    driver: json-file
+    options:
+      max-size: "5m"
+      max-file: "1"
+
+services:
+  postgres:
+    <<: *common
+    image: pgvector/pgvector:pg16
+    container_name: cs-test-postgres
+    environment:
+      POSTGRES_USER: claimshield_test
+      POSTGRES_PASSWORD: claimshield_test
+      POSTGRES_DB: claimshield_test
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./init-db:/docker-entrypoint-initdb.d
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claimshield_test"]
+      interval: 3s
+      timeout: 2s
+      retries: 5
+
+  valkey:
+    <<: *common
+    image: valkey/valkey:8-alpine
+    container_name: cs-test-valkey
+    ports:
+      - "6380:6379"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 5
+
+  kafka:
+    <<: *common
+    image: bitnami/kafka:3.7
+    container_name: cs-test-kafka
+    environment:
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_PROCESS_ROLES: broker,controller
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9095
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9095
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_KRAFT_CLUSTER_ID: "claimshield-test-001"
+    ports:
+      - "9095:9095"
+    tmpfs:
+      - /bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+  keycloak:
+    <<: *common
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: cs-test-keycloak
+    command: start-dev --import-realm
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/claimshield_test
+      KC_DB_USERNAME: claimshield_test
+      KC_DB_PASSWORD: claimshield_test
+      KC_DB_SCHEMA: keycloak
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q '200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 60s

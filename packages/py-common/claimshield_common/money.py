@@ -48,8 +48,34 @@ class Cents:
             return NotImplemented
         return Cents(self._value - other._value)
 
+    def __int__(self) -> int:
+        return self._value
+
+    def __gt__(self, other: Cents) -> bool:
+        if not isinstance(other, Cents):
+            return NotImplemented
+        return self._value > other._value
+
+    def __lt__(self, other: Cents) -> bool:
+        if not isinstance(other, Cents):
+            return NotImplemented
+        return self._value < other._value
+
+    def __ge__(self, other: Cents) -> bool:
+        if not isinstance(other, Cents):
+            return NotImplemented
+        return self._value >= other._value
+
+    def __le__(self, other: Cents) -> bool:
+        if not isinstance(other, Cents):
+            return NotImplemented
+        return self._value <= other._value
+
     def __hash__(self) -> int:
         return hash(self._value)
+
+    def to_dollars(self) -> float:
+        return self._value / 100
 
     @classmethod
     def __get_pydantic_core_schema__(
