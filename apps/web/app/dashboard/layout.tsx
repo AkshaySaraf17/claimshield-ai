@@ -4,9 +4,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "../components/AuthProvider";
 
-const NAV_ITEMS = [
-  { href: "/dashboard", label: "Appeal Workbench" },
+const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
+  { href: "/dashboard", label: "Dashboard", exact: true },
+  { href: "/dashboard/workbench", label: "Workbench" },
   { href: "/dashboard/claims", label: "Claims" },
+  { href: "/dashboard/appeals", label: "Appeals" },
   { href: "/dashboard/audit", label: "Audit Log" },
 ];
 
@@ -25,10 +27,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </span>
             <div className="flex gap-1">
               {NAV_ITEMS.map((item) => {
-                const isActive =
-                  item.href === "/dashboard"
-                    ? pathname === "/dashboard"
-                    : pathname.startsWith(item.href);
+                const isActive = item.exact
+                  ? pathname === item.href
+                  : pathname.startsWith(item.href);
                 return (
                   <Link
                     key={item.href}

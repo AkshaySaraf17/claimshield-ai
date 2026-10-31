@@ -466,3 +466,99 @@ async def _write_audit(
         hash=entry_hash,
     )
     session.add(entry)
+
+
+# ---------------------------------------------------------------------------
+# Stats / analytics endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/stats")
+async def get_stats(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        # Counts by status
+        status_q = (
+            select(Claim.status, func.count())
+            .where(Claim.tenant_id == tenant_id)
+            .group_by(Claim.status)
+        )
+        status_rows = (await session.execute(status_q)).all()
+        by_status = {row[0]: row[1] for row in status_rows}
+        total = sum(by_status.values())
+
+        # Total denied amount
+        denied_q = (
+            select(func.coalesce(func.sum(Claim.amount_denied_cents), 0))
+            .where(Claim.tenant_id == tenant_id)
+        )
+        total_denied_cents = (await session.execute(denied_q)).scalar_one()
+
+        # Won amount
+        won_q = (
+            select(func.coalesce(func.sum(Claim.amount_denied_cents), 0))
+            .where(Claim.tenant_id == tenant_id, Claim.status == "won")
+        )
+        won_cents = (await session.execute(won_q)).scalar_one()
+
+        # Appeals counts
+        appeals_total_q = (
+            select(func.count())
+            .select_from(Appeal)
+            .where(Appeal.tenant_id == tenant_id)
+        )
+        appeals_total = (await session.execute(appeals_total_q)).scalar_one()
+
+        pending_review_q = (
+            select(func.count())
+            .select_from(Appeal)
+            .where(Appeal.tenant_id == tenant_id, Appeal.needs_review == True)
+        )
+        pending_review = (await session.execute(pending_review_q)).scalar_one()
+
+        # Recent audit activity
+        recent_q = (
+            select(AuditLog)
+            .where(AuditLog.tenant_id == tenant_id)
+            .order_by(AuditLog.id.desc())
+            .limit(10)
+        )
+        recent_rows = (await session.execute(recent_q)).scalars().all()
+        recent_activity = [
+            {
+                "id": r.id,
+                "action": r.action,
+                "resource_type": r.resource_type,
+                "resource_id": r.resource_id,
+                "actor_id": r.actor_id,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in recent_rows
+        ]
+
+        # Payer breakdown
+        payer_q = (
+            select(Claim.payer_name, func.count(), func.coalesce(func.sum(Claim.amount_denied_cents), 0))
+            .where(Claim.tenant_id == tenant_id, Claim.payer_name.isnot(None))
+            .group_by(Claim.payer_name)
+        )
+        payer_rows = (await session.execute(payer_q)).all()
+        by_payer = [
+            {"payer": row[0], "count": row[1], "total_denied_cents": row[2]}
+            for row in payer_rows
+        ]
+
+    won_count = by_status.get("won", 0)
+    lost_count = by_status.get("lost", 0)
+    decided = won_count + lost_count
+
+    return {
+        "claims_total": total,
+        "claims_by_status": by_status,
+        "total_denied_cents": total_denied_cents,
+        "total_recovered_cents": won_cents,
+        "win_rate": round(won_count / decided, 2) if decided > 0 else None,
+        "appeals_total": appeals_total,
+        "appeals_pending_review": pending_review,
+        "by_payer": by_payer,
+        "recent_activity": recent_activity,
+    }
