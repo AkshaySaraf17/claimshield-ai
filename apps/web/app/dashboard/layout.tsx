@@ -38,6 +38,8 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard/escalations", label: "Escalate" },
   { href: "/dashboard/team", label: "Team" },
   { href: "/dashboard/clinics", label: "Clinics" },
+  { href: "/dashboard/scorecard", label: "KPIs" },
+  { href: "/dashboard/notifications", label: "Notifs" },
   { href: "/dashboard/audit", label: "Audit Log" },
   { href: "/dashboard/settings", label: "Settings" },
 ];

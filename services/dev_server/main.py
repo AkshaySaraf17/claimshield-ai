@@ -3414,3 +3414,212 @@ async def clinic_analytics(request: Request):
 
     result.sort(key=lambda x: x["total_denied_cents"], reverse=True)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Claim Status History (derived from audit log)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/claims/{claim_id}/status-history")
+async def claim_status_history(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        audits = (await session.execute(
+            select(AuditLog)
+            .where(
+                AuditLog.tenant_id == tenant_id,
+                AuditLog.resource_id == claim_id,
+                AuditLog.action.in_(["claim.created", "claim.status_changed"]),
+            )
+            .order_by(AuditLog.created_at.asc())
+        )).scalars().all()
+
+    history = []
+    for a in audits:
+        detail = {}
+        if a.detail:
+            try:
+                detail = json.loads(a.detail) if isinstance(a.detail, str) else a.detail
+            except (json.JSONDecodeError, TypeError):
+                pass
+        history.append({
+            "timestamp": a.created_at.isoformat(),
+            "action": a.action,
+            "actor_id": a.actor_id,
+            "from_status": detail.get("from_status"),
+            "to_status": detail.get("to_status") or detail.get("status"),
+        })
+    return history
+
+
+# ---------------------------------------------------------------------------
+# Batch Tag Operations
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/tags/batch")
+async def batch_tag_claims(request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    body = await request.json()
+    claim_ids = body.get("claim_ids", [])
+    tag_name = body.get("tag", "").strip()
+    action = body.get("action", "add")
+
+    if not tag_name or not claim_ids:
+        raise HTTPException(400, "claim_ids and tag required")
+
+    added = 0
+    removed = 0
+    async with request.app.state.session_factory() as session:
+        for cid in claim_ids:
+            if action == "add":
+                existing = (await session.execute(
+                    select(ClaimTag).where(
+                        ClaimTag.claim_id == cid,
+                        ClaimTag.tenant_id == tenant_id,
+                        ClaimTag.tag == tag_name,
+                    )
+                )).scalar_one_or_none()
+                if not existing:
+                    session.add(ClaimTag(
+                        id=str(uuid.uuid4()),
+                        tenant_id=tenant_id,
+                        claim_id=cid,
+                        tag=tag_name,
+                        created_by=user_id,
+                    ))
+                    added += 1
+            elif action == "remove":
+                existing = (await session.execute(
+                    select(ClaimTag).where(
+                        ClaimTag.claim_id == cid,
+                        ClaimTag.tenant_id == tenant_id,
+                        ClaimTag.tag == tag_name,
+                    )
+                )).scalar_one_or_none()
+                if existing:
+                    await session.delete(existing)
+                    removed += 1
+        await session.commit()
+
+    return {"added": added, "removed": removed, "tag": tag_name, "claim_count": len(claim_ids)}
+
+
+# ---------------------------------------------------------------------------
+# KPI Scorecard
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/analytics/scorecard")
+async def kpi_scorecard(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        claims = (await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id)
+        )).scalars().all()
+
+        appeals = (await session.execute(
+            select(Appeal).where(Appeal.tenant_id == tenant_id)
+        )).scalars().all()
+
+    now = datetime.now(timezone.utc)
+    total = len(claims)
+    won = sum(1 for c in claims if c.status == "won")
+    lost = sum(1 for c in claims if c.status == "lost")
+    pending = sum(1 for c in claims if c.status in ("pending_review", "in_progress", "needs_review"))
+    decided = won + lost
+
+    total_denied = sum(c.amount_denied_cents or 0 for c in claims)
+    total_recovered = sum(c.amount_approved_cents or 0 for c in claims if c.status == "won")
+    total_lost = sum(c.amount_denied_cents or 0 for c in claims if c.status == "lost")
+
+    open_claims = [c for c in claims if c.status in ("pending_review", "in_progress", "needs_review", "approved", "sent")]
+    avg_age_days = 0.0
+    if open_claims:
+        ages = [(now - c.created_at.replace(tzinfo=timezone.utc)).days for c in open_claims]
+        avg_age_days = round(sum(ages) / len(ages), 1)
+
+    appeals_pending = sum(1 for a in appeals if a.needs_review)
+    appeals_approved = sum(1 for a in appeals if a.approved_by)
+
+    overdue = sum(1 for c in claims if c.filing_deadline and c.filing_deadline.replace(tzinfo=timezone.utc) < now and c.status not in ("won", "lost", "cancelled", "sent"))
+
+    return {
+        "total_claims": total,
+        "won": won,
+        "lost": lost,
+        "pending": pending,
+        "win_rate": round(won / decided, 3) if decided > 0 else None,
+        "total_denied_cents": total_denied,
+        "total_recovered_cents": total_recovered,
+        "total_lost_cents": total_lost,
+        "recovery_rate": round(total_recovered / total_denied, 3) if total_denied > 0 else None,
+        "open_claims": len(open_claims),
+        "avg_open_age_days": avg_age_days,
+        "appeals_pending_review": appeals_pending,
+        "appeals_approved": appeals_approved,
+        "overdue_claims": overdue,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Notification Preferences
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/notifications/preferences")
+async def get_notification_prefs(request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with request.app.state.session_factory() as session:
+        prefs = (await session.execute(
+            select(UserPreference).where(
+                UserPreference.tenant_id == tenant_id,
+                UserPreference.user_id == user_id,
+                UserPreference.key.like("notif_%"),
+            )
+        )).scalars().all()
+
+    defaults = {
+        "notif_deadline_warning": "true",
+        "notif_status_change": "true",
+        "notif_appeal_approved": "true",
+        "notif_escalation": "true",
+        "notif_assignment": "true",
+        "notif_payer_response": "true",
+    }
+    result = dict(defaults)
+    for p in prefs:
+        result[p.key] = p.value
+    return result
+
+
+@app.put("/api/v1/notifications/preferences")
+async def update_notification_prefs(request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    body = await request.json()
+
+    async with request.app.state.session_factory() as session:
+        for key, value in body.items():
+            if not key.startswith("notif_"):
+                continue
+            existing = (await session.execute(
+                select(UserPreference).where(
+                    UserPreference.tenant_id == tenant_id,
+                    UserPreference.user_id == user_id,
+                    UserPreference.key == key,
+                )
+            )).scalar_one_or_none()
+            if existing:
+                existing.value = str(value)
+                existing.updated_at = datetime.now(timezone.utc)
+            else:
+                session.add(UserPreference(
+                    id=str(uuid.uuid4()),
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    key=key,
+                    value=str(value),
+                ))
+        await session.commit()
+
+    return {"status": "updated"}
