@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, Tenant, Clinic, Claim, Appeal, ClaimNote, ClaimAttachment, UserPreference, AuditLog, CustomTemplate, ClaimAssignment, ClaimTag, PayerResponse, ClaimComment, RoutingRule, ClaimWatchlist, PayerContact, ClaimCost, ClaimLink
+from .models import Base, Tenant, Clinic, Claim, Appeal, ClaimNote, ClaimAttachment, UserPreference, AuditLog, CustomTemplate, ClaimAssignment, ClaimTag, PayerResponse, ClaimComment, RoutingRule, ClaimWatchlist, PayerContact, ClaimCost, ClaimLink, DashboardBookmark
 from .seed import DEV_TENANT_ID, DEV_CLINIC_ID, DEV_USER_ID, build_seed_objects
 
 import sys
@@ -437,6 +437,70 @@ async def export_claims_csv(request: Request):
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=claims_export.csv"},
     )
+
+
+@app.get("/api/v1/claims/priority-scores")
+async def claim_priority_scores(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        claims = (await session.execute(
+            select(Claim).where(
+                Claim.tenant_id == tenant_id,
+                Claim.status.in_(["pending_review", "in_progress", "needs_review", "approved"]),
+            )
+        )).scalars().all()
+
+    now = datetime.utcnow()
+    scored = []
+    for c in claims:
+        score = 0
+        reasons = []
+
+        amount = c.amount_denied_cents or 0
+        if amount >= 500_00:
+            score += 30
+            reasons.append("high_value")
+        elif amount >= 100_00:
+            score += 15
+            reasons.append("medium_value")
+
+        if c.filing_deadline:
+            dl = c.filing_deadline.replace(tzinfo=None) if c.filing_deadline.tzinfo else c.filing_deadline
+            days_left = (dl - now).days
+            if days_left < 0:
+                score += 50
+                reasons.append("overdue")
+            elif days_left <= 7:
+                score += 40
+                reasons.append("deadline_urgent")
+            elif days_left <= 30:
+                score += 20
+                reasons.append("deadline_approaching")
+
+        if c.status == "pending_review":
+            ca = c.created_at.replace(tzinfo=None) if c.created_at.tzinfo else c.created_at
+            age_days = (now - ca).days
+            if age_days > 14:
+                score += 20
+                reasons.append("stale")
+            elif age_days > 7:
+                score += 10
+                reasons.append("aging")
+
+        scored.append({
+            "claim_id": c.id,
+            "claim_number": c.claim_number,
+            "payer_name": c.payer_name,
+            "denial_code": c.denial_code,
+            "status": c.status,
+            "amount_denied_cents": c.amount_denied_cents,
+            "filing_deadline": c.filing_deadline.isoformat() if c.filing_deadline else None,
+            "priority_score": score,
+            "reasons": reasons,
+        })
+
+    scored.sort(key=lambda x: x["priority_score"], reverse=True)
+    return scored
 
 
 @app.get("/api/v1/claims/{claim_id}")
@@ -4583,3 +4647,134 @@ async def delete_claim_link(link_id: str, request: Request):
         await session.commit()
         await _write_audit(session, tenant_id, user_id, "claim_link.delete", "claim_link", link_id, {})
         return {"deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# Dashboard Bookmarks
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/bookmarks")
+async def list_bookmarks(request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with request.app.state.session_factory() as session:
+        rows = (await session.execute(
+            select(DashboardBookmark)
+            .where(DashboardBookmark.tenant_id == tenant_id, DashboardBookmark.user_id == user_id)
+            .order_by(DashboardBookmark.created_at.asc())
+        )).scalars().all()
+        return [
+            {
+                "id": b.id,
+                "label": b.label,
+                "path": b.path,
+                "icon": b.icon,
+                "created_at": b.created_at.isoformat(),
+            }
+            for b in rows
+        ]
+
+
+@app.post("/api/v1/bookmarks", status_code=201)
+async def create_bookmark(request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    body = await request.json()
+    label = (body.get("label") or "").strip()
+    path = (body.get("path") or "").strip()
+    if not label or not path:
+        return JSONResponse({"detail": "label and path required"}, status_code=400)
+
+    async with request.app.state.session_factory() as session:
+        bm = DashboardBookmark(
+            id=str(uuid.uuid4()),
+            tenant_id=tenant_id,
+            user_id=user_id,
+            label=label,
+            path=path,
+            icon=body.get("icon"),
+        )
+        session.add(bm)
+        await session.commit()
+        return {"id": bm.id, "label": label, "path": path}
+
+
+@app.delete("/api/v1/bookmarks/{bookmark_id}")
+async def delete_bookmark(bookmark_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with request.app.state.session_factory() as session:
+        bm = (await session.execute(
+            select(DashboardBookmark).where(
+                DashboardBookmark.tenant_id == tenant_id,
+                DashboardBookmark.id == bookmark_id,
+                DashboardBookmark.user_id == user_id,
+            )
+        )).scalar_one_or_none()
+        if not bm:
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        await session.delete(bm)
+        await session.commit()
+        return {"deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# Payer SLA Tracker
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/analytics/payer-sla")
+async def payer_sla(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        claims = (await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id)
+        )).scalars().all()
+        responses = (await session.execute(
+            select(PayerResponse).where(PayerResponse.tenant_id == tenant_id)
+        )).scalars().all()
+
+    response_map: dict[str, datetime] = {}
+    for r in responses:
+        if r.claim_id not in response_map or r.received_at < response_map[r.claim_id]:
+            response_map[r.claim_id] = r.received_at
+
+    by_payer: dict[str, dict] = {}
+    for c in claims:
+        payer = c.payer_name or "Unknown"
+        if payer not in by_payer:
+            by_payer[payer] = {
+                "total": 0,
+                "responded": 0,
+                "response_days": [],
+                "sla_target_days": PAYER_DEADLINES_DAYS.get(payer, 45),
+                "within_sla": 0,
+                "overdue": 0,
+            }
+        b = by_payer[payer]
+        b["total"] += 1
+
+        if c.id in response_map:
+            b["responded"] += 1
+            days = (response_map[c.id] - c.created_at).days
+            b["response_days"].append(days)
+            if days <= b["sla_target_days"]:
+                b["within_sla"] += 1
+            else:
+                b["overdue"] += 1
+
+    result = []
+    for payer, data in sorted(by_payer.items()):
+        avg_days = round(sum(data["response_days"]) / len(data["response_days"]), 1) if data["response_days"] else None
+        sla_rate = round(data["within_sla"] / data["responded"] * 100, 1) if data["responded"] > 0 else None
+        result.append({
+            "payer": payer,
+            "total_claims": data["total"],
+            "responded": data["responded"],
+            "avg_response_days": avg_days,
+            "sla_target_days": data["sla_target_days"],
+            "within_sla": data["within_sla"],
+            "overdue": data["overdue"],
+            "sla_compliance_rate": sla_rate,
+        })
+    result.sort(key=lambda x: x["total_claims"], reverse=True)
+    return result
