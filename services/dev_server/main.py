@@ -970,35 +970,70 @@ async def payer_analytics(request: Request):
         result = await session.execute(q)
         claims = result.scalars().all()
 
+        appeal_result = await session.execute(
+            select(Appeal).where(Appeal.tenant_id == tenant_id)
+        )
+        appeals = appeal_result.scalars().all()
+
+    appeal_by_claim: dict[str, list] = {}
+    for a in appeals:
+        appeal_by_claim.setdefault(a.claim_id, []).append(a)
+
     payers: dict[str, dict] = {}
     for c in claims:
         name = c.payer_name or "Unknown"
         if name not in payers:
             payers[name] = {
-                "payer_name": name,
+                "payer": name,
                 "total_claims": 0,
                 "total_denied_cents": 0,
                 "total_recovered_cents": 0,
-                "denial_codes": {},
+                "avg_amount_cents": 0,
+                "appeals_count": 0,
+                "won": 0,
+                "lost": 0,
+                "pending": 0,
+                "win_rate": 0,
+                "recovery_rate": 0,
                 "by_status": {},
+                "by_denial_code": {},
             }
         p = payers[name]
         p["total_claims"] += 1
         p["total_denied_cents"] += c.amount_denied_cents or 0
-        if c.status == "won":
-            p["total_recovered_cents"] += c.amount_denied_cents or 0
-
-        code = c.denial_code or "unknown"
-        p["denial_codes"][code] = p["denial_codes"].get(code, 0) + 1
         p["by_status"][c.status] = p["by_status"].get(c.status, 0) + 1
 
-    result_list = sorted(payers.values(), key=lambda x: x["total_denied_cents"], reverse=True)
-    for p in result_list:
-        denied = p["total_denied_cents"]
-        recovered = p["total_recovered_cents"]
-        p["win_rate"] = round(recovered / denied * 100, 1) if denied > 0 else 0.0
+        code = c.denial_code or "Unknown"
+        p["by_denial_code"][code] = p["by_denial_code"].get(code, 0) + 1
 
-    return result_list
+        if c.status == "won":
+            p["won"] += 1
+            p["total_recovered_cents"] += c.amount_denied_cents or 0
+        elif c.status == "lost":
+            p["lost"] += 1
+        elif c.status in ("pending_review", "in_progress", "needs_review", "approved", "sent"):
+            p["pending"] += 1
+
+        p["appeals_count"] += len(appeal_by_claim.get(c.id, []))
+
+    payer_list = []
+    for p in payers.values():
+        if p["total_claims"] > 0:
+            p["avg_amount_cents"] = p["total_denied_cents"] // p["total_claims"]
+        decided = p["won"] + p["lost"]
+        p["win_rate"] = round(p["won"] / decided * 100) if decided > 0 else 0
+        p["recovery_rate"] = round(p["total_recovered_cents"] / p["total_denied_cents"] * 100) if p["total_denied_cents"] > 0 else 0
+        p["by_denial_code"] = [{"code": k, "count": v} for k, v in sorted(p["by_denial_code"].items(), key=lambda x: -x[1])]
+        payer_list.append(p)
+
+    payer_list.sort(key=lambda x: -x["total_denied_cents"])
+
+    return {
+        "payers": payer_list,
+        "total_payers": len(payer_list),
+        "total_claims": len(claims),
+        "total_denied_cents": sum(c.amount_denied_cents or 0 for c in claims),
+    }
 
 
 # ── Batch Status Transition ─────────────────────────────────────────────
@@ -2518,6 +2553,36 @@ async def calendar_deadlines(req: Request):
         "overdue": overdue,
         "urgent": urgent,
         "payer_deadlines": PAYER_DEADLINES_DAYS,
+    }
+
+
+# ── Appeal Letter Preview ────────────────────────────────────────────
+
+
+@app.get("/api/v1/appeals/{appeal_id}/preview")
+async def appeal_preview(appeal_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        appeal = await session.get(Appeal, appeal_id)
+        if not appeal or appeal.tenant_id != tenant_id:
+            return JSONResponse({"detail": "Appeal not found"}, 404)
+
+        claim = await session.get(Claim, appeal.claim_id)
+
+    return {
+        "appeal_id": appeal.id,
+        "claim_id": appeal.claim_id,
+        "claim_number": claim.claim_number if claim else None,
+        "payer_name": claim.payer_name if claim else None,
+        "denial_code": claim.denial_code if claim else None,
+        "denial_reason": claim.denial_reason if claim else None,
+        "amount_denied_cents": claim.amount_denied_cents if claim else None,
+        "letter_body": appeal.letter_body,
+        "template_used": appeal.template_used,
+        "needs_review": appeal.needs_review,
+        "approved_by": appeal.approved_by,
+        "approved_at": appeal.approved_at.isoformat() if appeal.approved_at else None,
+        "created_at": appeal.created_at.isoformat(),
     }
 
 

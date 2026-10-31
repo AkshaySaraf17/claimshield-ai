@@ -26,6 +26,7 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard/duplicates", label: "Dupes" },
   { href: "/dashboard/rules", label: "Rules" },
   { href: "/dashboard/workqueue", label: "Queue" },
+  { href: "/dashboard/payers", label: "Payers" },
   { href: "/dashboard/calendar", label: "Calendar" },
   { href: "/dashboard/merge", label: "Merge" },
   { href: "/dashboard/audit", label: "Audit Log" },
