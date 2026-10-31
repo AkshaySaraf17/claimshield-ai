@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, Tenant, Clinic, Claim, Appeal, ClaimNote, ClaimAttachment, UserPreference, AuditLog, CustomTemplate, ClaimAssignment, ClaimTag, PayerResponse
+from .models import Base, Tenant, Clinic, Claim, Appeal, ClaimNote, ClaimAttachment, UserPreference, AuditLog, CustomTemplate, ClaimAssignment, ClaimTag, PayerResponse, ClaimComment, RoutingRule
 from .seed import DEV_TENANT_ID, DEV_CLINIC_ID, DEV_USER_ID, build_seed_objects
 
 import sys
@@ -3773,3 +3773,287 @@ async def system_health(request: Request):
         "version": "0.1.0-dev",
         "environment": "development",
     }
+
+
+# ---------------------------------------------------------------------------
+# Claim Comments / Collaboration
+# ---------------------------------------------------------------------------
+
+ROLE_PERMISSIONS = {
+    "admin": ["read", "write", "approve", "send", "assign", "manage_users", "manage_rules", "view_audit", "export"],
+    "manager": ["read", "write", "approve", "send", "assign", "view_audit", "export"],
+    "biller": ["read", "write", "approve", "send", "export"],
+    "reviewer": ["read", "write", "approve"],
+    "viewer": ["read"],
+}
+
+
+@app.get("/api/v1/roles")
+async def list_roles(request: Request):
+    _get_tenant_id(request)
+    return [
+        {"role": role, "permissions": perms, "user_count": sum(1 for u in TEAM_MEMBERS if True)}
+        for role, perms in ROLE_PERMISSIONS.items()
+    ]
+
+
+@app.get("/api/v1/claims/{claim_id}/comments")
+async def list_comments(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        rows = (await session.execute(
+            select(ClaimComment)
+            .where(ClaimComment.tenant_id == tenant_id, ClaimComment.claim_id == claim_id)
+            .order_by(ClaimComment.created_at.asc())
+        )).scalars().all()
+        return [
+            {
+                "id": c.id,
+                "claim_id": c.claim_id,
+                "parent_id": c.parent_id,
+                "author_id": c.author_id,
+                "author_name": TEAM_MEMBERS.get(c.author_id, c.author_id),
+                "body": c.body,
+                "created_at": c.created_at.isoformat(),
+            }
+            for c in rows
+        ]
+
+
+@app.post("/api/v1/claims/{claim_id}/comments", status_code=201)
+async def add_comment(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    body = await request.json()
+    text = (body.get("body") or "").strip()
+    if not text:
+        return JSONResponse({"detail": "body is required"}, status_code=400)
+    parent_id = body.get("parent_id")
+
+    async with request.app.state.session_factory() as session:
+        comment = ClaimComment(
+            id=str(uuid.uuid4()),
+            tenant_id=tenant_id,
+            claim_id=claim_id,
+            parent_id=parent_id,
+            author_id=user_id,
+            body=text,
+        )
+        session.add(comment)
+        await session.commit()
+
+        await _write_audit(session, tenant_id, user_id, "comment.create", "claim", claim_id,
+                           {"comment_id": comment.id, "parent_id": parent_id})
+        return {
+            "id": comment.id,
+            "claim_id": claim_id,
+            "parent_id": parent_id,
+            "author_id": user_id,
+            "author_name": TEAM_MEMBERS.get(user_id, user_id),
+            "body": text,
+            "created_at": comment.created_at.isoformat(),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Appeal Effectiveness Analytics
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/analytics/appeal-effectiveness")
+async def appeal_effectiveness(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        claims = (await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id)
+        )).scalars().all()
+        appeals = (await session.execute(
+            select(Appeal).where(Appeal.tenant_id == tenant_id)
+        )).scalars().all()
+        responses = (await session.execute(
+            select(PayerResponse).where(PayerResponse.tenant_id == tenant_id)
+        )).scalars().all()
+
+    claim_map = {c.id: c for c in claims}
+    appeal_map = {a.claim_id: a for a in appeals}
+    response_map: dict[str, list] = {}
+    for r in responses:
+        response_map.setdefault(r.claim_id, []).append(r)
+
+    by_code: dict[str, dict] = {}
+    by_payer: dict[str, dict] = {}
+
+    for c in claims:
+        code = c.denial_code or "UNKNOWN"
+        payer = c.payer_name or "Unknown"
+
+        for bucket_key, bucket_dict in [(code, by_code), (payer, by_payer)]:
+            if bucket_key not in bucket_dict:
+                bucket_dict[bucket_key] = {"total": 0, "appealed": 0, "won": 0, "lost": 0, "pending": 0,
+                                           "denied_cents": 0, "recovered_cents": 0}
+            b = bucket_dict[bucket_key]
+            b["total"] += 1
+            b["denied_cents"] += c.amount_denied_cents or 0
+
+            if c.id in appeal_map:
+                b["appealed"] += 1
+            if c.status == "won":
+                b["won"] += 1
+                b["recovered_cents"] += c.amount_approved_cents or 0
+            elif c.status == "lost":
+                b["lost"] += 1
+            elif c.status in ("in_progress", "needs_review", "approved", "sent"):
+                b["pending"] += 1
+
+    def _make_list(d: dict) -> list:
+        out = []
+        for k, v in d.items():
+            win_rate = round(v["won"] / v["appealed"] * 100, 1) if v["appealed"] > 0 else 0.0
+            out.append({"key": k, **v, "win_rate": win_rate})
+        out.sort(key=lambda x: x["total"], reverse=True)
+        return out
+
+    return {
+        "by_denial_code": _make_list(by_code),
+        "by_payer": _make_list(by_payer),
+        "total_claims": len(claims),
+        "total_appeals": len(appeals),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Claim Routing Rules
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/routing-rules")
+async def list_routing_rules(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        rows = (await session.execute(
+            select(RoutingRule)
+            .where(RoutingRule.tenant_id == tenant_id)
+            .order_by(RoutingRule.priority.asc())
+        )).scalars().all()
+        return [
+            {
+                "id": r.id,
+                "name": r.name,
+                "priority": r.priority,
+                "match_payer": r.match_payer,
+                "match_denial_code": r.match_denial_code,
+                "min_amount_cents": r.min_amount_cents,
+                "max_amount_cents": r.max_amount_cents,
+                "assign_to": r.assign_to,
+                "assign_to_name": TEAM_MEMBERS.get(r.assign_to, r.assign_to),
+                "is_active": r.is_active,
+                "created_by": r.created_by,
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in rows
+        ]
+
+
+@app.post("/api/v1/routing-rules", status_code=201)
+async def create_routing_rule(request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    body = await request.json()
+
+    name = (body.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"detail": "name is required"}, status_code=400)
+    assign_to = body.get("assign_to", "")
+    if not assign_to:
+        return JSONResponse({"detail": "assign_to is required"}, status_code=400)
+
+    async with request.app.state.session_factory() as session:
+        rule = RoutingRule(
+            id=str(uuid.uuid4()),
+            tenant_id=tenant_id,
+            name=name,
+            priority=body.get("priority", 100),
+            match_payer=body.get("match_payer"),
+            match_denial_code=body.get("match_denial_code"),
+            min_amount_cents=body.get("min_amount_cents"),
+            max_amount_cents=body.get("max_amount_cents"),
+            assign_to=assign_to,
+            is_active=body.get("is_active", True),
+            created_by=user_id,
+        )
+        session.add(rule)
+        await session.commit()
+
+        await _write_audit(session, tenant_id, user_id, "routing_rule.create", "routing_rule", rule.id,
+                           {"name": name, "assign_to": assign_to})
+        return {"id": rule.id, "name": name}
+
+
+@app.delete("/api/v1/routing-rules/{rule_id}")
+async def delete_routing_rule(rule_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with request.app.state.session_factory() as session:
+        rule = (await session.execute(
+            select(RoutingRule).where(RoutingRule.tenant_id == tenant_id, RoutingRule.id == rule_id)
+        )).scalar_one_or_none()
+        if not rule:
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        await session.delete(rule)
+        await session.commit()
+        await _write_audit(session, tenant_id, user_id, "routing_rule.delete", "routing_rule", rule_id, {})
+        return {"deleted": True}
+
+
+@app.post("/api/v1/claims/{claim_id}/auto-route")
+async def auto_route_claim(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with request.app.state.session_factory() as session:
+        claim = (await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id, Claim.id == claim_id)
+        )).scalar_one_or_none()
+        if not claim:
+            return JSONResponse({"detail": "claim not found"}, status_code=404)
+
+        rules = (await session.execute(
+            select(RoutingRule)
+            .where(RoutingRule.tenant_id == tenant_id, RoutingRule.is_active == True)
+            .order_by(RoutingRule.priority.asc())
+        )).scalars().all()
+
+        matched_rule = None
+        for rule in rules:
+            if rule.match_payer and rule.match_payer.lower() != (claim.payer_name or "").lower():
+                continue
+            if rule.match_denial_code and rule.match_denial_code != claim.denial_code:
+                continue
+            if rule.min_amount_cents is not None and (claim.amount_denied_cents or 0) < rule.min_amount_cents:
+                continue
+            if rule.max_amount_cents is not None and (claim.amount_denied_cents or 0) > rule.max_amount_cents:
+                continue
+            matched_rule = rule
+            break
+
+        if not matched_rule:
+            return {"routed": False, "reason": "no matching rule"}
+
+        assignment = ClaimAssignment(
+            id=str(uuid.uuid4()),
+            tenant_id=tenant_id,
+            claim_id=claim_id,
+            assigned_to=matched_rule.assign_to,
+            assigned_by="system:auto-route",
+            note=f"Auto-routed by rule: {matched_rule.name}",
+        )
+        session.add(assignment)
+        await session.commit()
+
+        await _write_audit(session, tenant_id, user_id, "claim.auto_route", "claim", claim_id,
+                           {"rule_id": matched_rule.id, "rule_name": matched_rule.name,
+                            "assigned_to": matched_rule.assign_to})
+        return {
+            "routed": True,
+            "rule_id": matched_rule.id,
+            "rule_name": matched_rule.name,
+            "assigned_to": matched_rule.assign_to,
+            "assigned_to_name": TEAM_MEMBERS.get(matched_rule.assign_to, matched_rule.assign_to),
+        }
