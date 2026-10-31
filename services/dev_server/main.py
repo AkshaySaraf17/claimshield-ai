@@ -1189,6 +1189,66 @@ async def generate_appeal_letter(body: GenerateLetterRequest, request: Request):
     }
 
 
+class BatchAppealRequest(BaseModel):
+    claim_ids: list[str]
+    template_category: str | None = None
+    save_as_draft: bool = False
+
+
+@app.post("/api/v1/appeal-letters/batch")
+async def batch_generate_appeals(body: BatchAppealRequest, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = request.headers.get("x-user-id", "system")
+
+    results = []
+    async with app.state.session_factory() as session:
+        for cid in body.claim_ids[:20]:
+            claim = await session.get(Claim, cid)
+            if not claim or claim.tenant_id != tenant_id:
+                results.append({"claim_id": cid, "error": "Claim not found"})
+                continue
+
+            claim_data = _claim_dict(claim)
+            category = body.template_category
+            if not category:
+                code = claim_data.get("denial_code", "")
+                category = DENIAL_CODE_TO_CATEGORY.get(code, "Medical Necessity")
+
+            letter = _generate_appeal_letter(claim_data, category)
+
+            entry: dict = {
+                "claim_id": cid,
+                "claim_number": claim_data.get("claim_number"),
+                "template_category": category,
+                "letter_text": letter,
+                "source": APPEAL_TEMPLATES.get(category, {}).get("source", "N/A"),
+            }
+
+            if body.save_as_draft:
+                appeal = Appeal(
+                    tenant_id=tenant_id,
+                    claim_id=cid,
+                    letter_text=letter,
+                    confidence=0.85,
+                    needs_review=True,
+                )
+                session.add(appeal)
+                _add_audit(session, tenant_id, "appeal.drafted", "appeal", appeal.id, user_id,
+                           {"source": "batch", "category": category})
+                entry["appeal_id"] = appeal.id
+
+            results.append(entry)
+
+        if body.save_as_draft:
+            await session.commit()
+
+    return {
+        "generated": len([r for r in results if "error" not in r]),
+        "errors": len([r for r in results if "error" in r]),
+        "results": results,
+    }
+
+
 # ── Claim Attachments ──────────────────────────────────────────────────
 
 @app.get("/api/v1/claims/{claim_id}/attachments")
