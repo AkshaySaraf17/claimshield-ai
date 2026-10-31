@@ -1396,3 +1396,89 @@ async def report_summary(request: Request, period_days: int = Query(default=30, 
             for k, v in sorted(payer_summary.items(), key=lambda x: x[1]["denied_cents"], reverse=True)
         ],
     }
+
+
+# ── Bulk Claim Creation ────────────────────────────────────────────────
+
+class BulkClaimItem(BaseModel):
+    claim_number: str | None = None
+    payer_name: str | None = None
+    denial_code: str | None = None
+    denial_reason: str | None = None
+    raw_denial_text: str
+    raw_clinical_notes: str
+    amount_denied_cents: int | None = None
+    patient_id: str | None = None
+
+
+class BulkClaimCreate(BaseModel):
+    claims: list[BulkClaimItem]
+
+
+@app.post("/api/v1/claims/bulk", status_code=201)
+async def bulk_create_claims(body: BulkClaimCreate, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+
+    created = []
+    async with app.state.session_factory() as session:
+        for item in body.claims:
+            claim = Claim(
+                id=str(uuid.uuid4()),
+                tenant_id=tenant_id,
+                clinic_id=DEV_CLINIC_ID,
+                patient_id=item.patient_id,
+                claim_number=item.claim_number,
+                payer_name=item.payer_name,
+                denial_code=item.denial_code,
+                denial_reason=item.denial_reason,
+                raw_denial_text=item.raw_denial_text,
+                raw_clinical_notes=item.raw_clinical_notes,
+                amount_denied_cents=item.amount_denied_cents,
+                filing_deadline=_compute_deadline(item.payer_name),
+            )
+            session.add(claim)
+            await _write_audit(session, tenant_id, user_id, "claim.created", "claim", claim.id, {"source": "bulk"})
+            created.append(claim.id)
+
+        await session.commit()
+
+    return {"created": len(created), "claim_ids": created}
+
+
+# ── Claim Comparison ──────────────────────────────────────────────────
+
+class CompareRequest(BaseModel):
+    claim_ids: list[str]
+
+
+@app.post("/api/v1/claims/compare")
+async def compare_claims(body: CompareRequest, request: Request):
+    tenant_id = _get_tenant_id(request)
+    if len(body.claim_ids) < 2:
+        return {"detail": "Need at least 2 claim IDs"}, 400
+
+    async with app.state.session_factory() as session:
+        claims_data = []
+        for cid in body.claim_ids[:5]:
+            claim = await session.get(Claim, cid)
+            if claim and claim.tenant_id == tenant_id:
+                claims_data.append(_claim_dict(claim))
+
+    if len(claims_data) < 2:
+        return {"detail": "Need at least 2 valid claims"}, 400
+
+    fields = ["payer_name", "denial_code", "denial_reason", "amount_denied_cents", "status", "filing_deadline"]
+    differences = {}
+    for field in fields:
+        values = [c.get(field) for c in claims_data]
+        if len(set(str(v) for v in values)) > 1:
+            differences[field] = values
+
+    return {
+        "claims": claims_data,
+        "differences": differences,
+        "same_payer": len(set(c.get("payer_name") for c in claims_data)) == 1,
+        "same_denial_code": len(set(c.get("denial_code") for c in claims_data)) == 1,
+        "total_denied_cents": sum(c.get("amount_denied_cents") or 0 for c in claims_data),
+    }

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useAuth } from "../../components/AuthProvider";
 import { authFetch } from "../../lib/auth";
 
@@ -139,13 +140,21 @@ export default function ClaimsListPage() {
             Claims
           </h1>
         </div>
-        <a
-          href="/api/v1/claims/export"
-          download
-          className="rounded border border-ink-300/50 px-3 py-1.5 text-sm text-ink-600 hover:bg-ink-100"
-        >
-          Export CSV
-        </a>
+        <div className="flex gap-2">
+          <a
+            href="/api/v1/claims/export"
+            download
+            className="rounded border border-ink-300/50 px-3 py-1.5 text-sm text-ink-600 hover:bg-ink-100"
+          >
+            Export CSV
+          </a>
+          <Link
+            href="/dashboard/claims/new"
+            className="rounded bg-ink-950 px-3 py-1.5 text-sm font-medium text-white hover:bg-ink-900"
+          >
+            + New Claim
+          </Link>
+        </div>
       </header>
 
       {/* Filters */}
