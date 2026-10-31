@@ -30,6 +30,7 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard/calendar", label: "Calendar" },
   { href: "/dashboard/merge", label: "Merge" },
   { href: "/dashboard/batch-actions", label: "Bulk Ops" },
+  { href: "/dashboard/compare", label: "Compare" },
   { href: "/dashboard/audit", label: "Audit Log" },
   { href: "/dashboard/settings", label: "Settings" },
 ];
