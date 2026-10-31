@@ -1482,3 +1482,76 @@ async def compare_claims(body: CompareRequest, request: Request):
         "same_denial_code": len(set(c.get("denial_code") for c in claims_data)) == 1,
         "total_denied_cents": sum(c.get("amount_denied_cents") or 0 for c in claims_data),
     }
+
+
+# ── Denial Pattern Detector ──────────────────────────────────────────
+
+@app.get("/api/v1/analytics/patterns")
+async def denial_patterns(request: Request, min_count: int = Query(default=2, ge=2)):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        q = select(Claim).where(Claim.tenant_id == tenant_id)
+        result = await session.execute(q)
+        claims = result.scalars().all()
+
+    # Group by (payer, denial_code) pairs
+    combos: dict[tuple[str, str], list[dict]] = {}
+    for c in claims:
+        payer = c.payer_name or "Unknown"
+        code = c.denial_code or "unknown"
+        key = (payer, code)
+        if key not in combos:
+            combos[key] = []
+        combos[key].append(_claim_dict(c))
+
+    patterns = []
+    for (payer, code), group_claims in combos.items():
+        if len(group_claims) < min_count:
+            continue
+        total_denied = sum(c.get("amount_denied_cents") or 0 for c in group_claims)
+        statuses = {}
+        for c in group_claims:
+            statuses[c["status"]] = statuses.get(c["status"], 0) + 1
+
+        won = statuses.get("won", 0)
+        lost = statuses.get("lost", 0)
+        decided = won + lost
+
+        category = DENIAL_CODE_TO_CATEGORY.get(code, "Other")
+
+        patterns.append({
+            "payer": payer,
+            "denial_code": code,
+            "category": category,
+            "count": len(group_claims),
+            "total_denied_cents": total_denied,
+            "avg_denied_cents": total_denied // len(group_claims) if group_claims else 0,
+            "statuses": statuses,
+            "win_rate": round(won / decided * 100, 1) if decided > 0 else None,
+            "claim_ids": [c["id"] for c in group_claims],
+            "recommendation": _pattern_recommendation(category, won, lost, len(group_claims)),
+        })
+
+    patterns.sort(key=lambda p: p["total_denied_cents"], reverse=True)
+    return patterns
+
+
+def _pattern_recommendation(category: str, won: int, lost: int, total: int) -> str:
+    decided = won + lost
+    if decided >= 2 and won / decided >= 0.7:
+        return "Strong appeal history — continue appealing similar denials."
+    if decided >= 2 and lost / decided >= 0.7:
+        return "Low win rate — consider process changes or pre-authorization before service."
+
+    recs: dict[str, str] = {
+        "Medical Necessity": "Ensure clinical documentation clearly supports necessity before billing.",
+        "Timely Filing": "Review submission workflows and track filing deadlines proactively.",
+        "Authorization": "Verify prior authorization status before rendering services.",
+        "Coding": "Audit coding practices and consider a coding review for these claim types.",
+        "Coverage": "Confirm benefit eligibility and coverage before scheduling services.",
+        "Duplicate": "Review claim submission process for duplicate prevention.",
+        "Bundling": "Review NCCI edits and modifier usage for these procedure combinations.",
+        "Fee Schedule": "Review contracted rates and ensure charges align with fee schedules.",
+        "Information": "Implement pre-submission checks for required claim data elements.",
+    }
+    return recs.get(category, "Review denial pattern and consider targeted process improvements.")
