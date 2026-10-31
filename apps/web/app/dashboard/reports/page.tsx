@@ -49,6 +49,8 @@ export default function ReportsPage() {
   const [report, setReport] = useState<ReportData | null>(null);
   const [period, setPeriod] = useState(30);
   const [loading, setLoading] = useState(true);
+  const [textReport, setTextReport] = useState("");
+  const [copied, setCopied] = useState(false);
 
   function loadReport(days: number) {
     setLoading(true);
@@ -63,6 +65,29 @@ export default function ReportsPage() {
   useEffect(() => {
     loadReport(period);
   }, [period]);
+
+  useEffect(() => {
+    fetch("/api/v1/reports/summary-text")
+      .then((r) => r.json())
+      .then((d) => setTextReport(d.text || ""));
+  }, []);
+
+  function copyText() {
+    navigator.clipboard.writeText(textReport).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  function downloadText() {
+    const blob = new Blob([textReport], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `claimshield-report-${new Date().toISOString().slice(0, 10)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-10">
@@ -227,6 +252,32 @@ export default function ReportsPage() {
               </tbody>
             </table>
           </div>
+
+          {/* Text export */}
+          {textReport && (
+            <div className="mt-6 rounded-lg border border-ink-200 bg-white p-5">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-semibold text-ink-900">Text Export</h2>
+                <div className="flex gap-2">
+                  <button
+                    onClick={copyText}
+                    className="rounded border border-ink-200 px-2 py-1 text-xs text-ink-600 hover:bg-ink-50"
+                  >
+                    {copied ? "Copied!" : "Copy"}
+                  </button>
+                  <button
+                    onClick={downloadText}
+                    className="rounded border border-ink-200 px-2 py-1 text-xs text-ink-600 hover:bg-ink-50"
+                  >
+                    Download .txt
+                  </button>
+                </div>
+              </div>
+              <pre className="max-h-60 overflow-y-auto whitespace-pre-wrap rounded bg-ink-50 p-4 font-mono text-xs leading-relaxed text-ink-700">
+                {textReport}
+              </pre>
+            </div>
+          )}
 
           <p className="mt-4 text-xs text-ink-400">
             Report generated at {new Date(report.generated_at).toLocaleString()}

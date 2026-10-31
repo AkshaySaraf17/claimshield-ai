@@ -2586,5 +2586,119 @@ async def appeal_preview(appeal_id: str, request: Request):
     }
 
 
+# ── Denial Code Analytics ────────────────────────────────────────────
+
+
+@app.get("/api/v1/analytics/denial-codes")
+async def denial_code_analytics(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        result = await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id)
+        )
+        claims = result.scalars().all()
+
+    codes: dict[str, dict] = {}
+    for c in claims:
+        code = c.denial_code or "Unknown"
+        if code not in codes:
+            codes[code] = {
+                "code": code,
+                "category": DENIAL_CODE_TO_CATEGORY.get(code, "Other"),
+                "total_claims": 0,
+                "total_denied_cents": 0,
+                "won": 0,
+                "lost": 0,
+                "pending": 0,
+                "payers": {},
+            }
+        d = codes[code]
+        d["total_claims"] += 1
+        d["total_denied_cents"] += c.amount_denied_cents or 0
+        if c.status == "won":
+            d["won"] += 1
+        elif c.status == "lost":
+            d["lost"] += 1
+        elif c.status in ("pending_review", "in_progress", "needs_review", "approved", "sent"):
+            d["pending"] += 1
+        payer = c.payer_name or "Unknown"
+        d["payers"][payer] = d["payers"].get(payer, 0) + 1
+
+    code_list = []
+    for d in codes.values():
+        decided = d["won"] + d["lost"]
+        d["win_rate"] = round(d["won"] / decided * 100) if decided > 0 else 0
+        d["avg_amount_cents"] = d["total_denied_cents"] // d["total_claims"] if d["total_claims"] > 0 else 0
+        d["payers"] = [{"payer": k, "count": v} for k, v in sorted(d["payers"].items(), key=lambda x: -x[1])]
+        code_list.append(d)
+
+    code_list.sort(key=lambda x: -x["total_denied_cents"])
+
+    return {
+        "codes": code_list,
+        "total_codes": len(code_list),
+    }
+
+
+# ── Dashboard Summary Export ─────────────────────────────────────────
+
+
+@app.get("/api/v1/reports/summary-text")
+async def summary_text_report(request: Request, period_days: int = Query(default=30)):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        result = await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id)
+        )
+        claims = result.scalars().all()
+
+        appeal_result = await session.execute(
+            select(Appeal).where(Appeal.tenant_id == tenant_id)
+        )
+        appeals = appeal_result.scalars().all()
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=period_days)
+
+    total = len(claims)
+    total_denied = sum(c.amount_denied_cents or 0 for c in claims)
+    won_claims = [c for c in claims if c.status == "won"]
+    total_recovered = sum(c.amount_denied_cents or 0 for c in won_claims)
+    recent_claims = [c for c in claims if c.created_at.replace(tzinfo=timezone.utc) >= cutoff]
+
+    by_status: dict[str, int] = {}
+    for c in claims:
+        by_status[c.status] = by_status.get(c.status, 0) + 1
+
+    lines = [
+        f"ClaimShield AI — Summary Report ({period_days}-day period)",
+        f"Generated: {now.strftime('%Y-%m-%d %H:%M UTC')}",
+        "",
+        "=== Overview ===",
+        f"Total Claims: {total}",
+        f"Total Denied: ${total_denied / 100:,.2f}",
+        f"Total Recovered: ${total_recovered / 100:,.2f}",
+        f"Win Rate: {round(len(won_claims) / (len(won_claims) + len([c for c in claims if c.status == 'lost'])) * 100) if (len(won_claims) + len([c for c in claims if c.status == 'lost'])) > 0 else 0}%",
+        f"Total Appeals: {len(appeals)}",
+        "",
+        f"=== Last {period_days} Days ===",
+        f"New Claims: {len(recent_claims)}",
+        f"New Denied Amount: ${sum(c.amount_denied_cents or 0 for c in recent_claims) / 100:,.2f}",
+        "",
+        "=== Status Distribution ===",
+    ]
+    for status, count in sorted(by_status.items(), key=lambda x: -x[1]):
+        lines.append(f"  {status.replace('_', ' ')}: {count}")
+
+    lines.append("")
+    lines.append("=== Top Denial Codes ===")
+    code_counts: dict[str, int] = {}
+    for c in claims:
+        code = c.denial_code or "Unknown"
+        code_counts[code] = code_counts.get(code, 0) + 1
+    for code, count in sorted(code_counts.items(), key=lambda x: -x[1])[:10]:
+        lines.append(f"  {code}: {count} claims")
+
+    return {"text": "\n".join(lines), "period_days": period_days}
 
 

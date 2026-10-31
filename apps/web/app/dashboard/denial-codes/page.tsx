@@ -11,6 +11,24 @@ interface DenialCode {
   source: string;
 }
 
+interface PayerBreakdown { payer: string; count: number; }
+interface AnalyticsRow {
+  code: string;
+  category: string;
+  total_claims: number;
+  total_denied_cents: number;
+  won: number;
+  lost: number;
+  pending: number;
+  payers: PayerBreakdown[];
+  win_rate: number;
+  avg_amount_cents: number;
+}
+
+function dollars(cents: number) {
+  return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2 })}`;
+}
+
 const CATEGORY_COLORS: Record<string, string> = {
   "Medical Necessity": "bg-red-100 text-red-700",
   "Authorization": "bg-purple-100 text-purple-700",
@@ -34,9 +52,13 @@ const GROUP_LABELS: Record<string, string> = {
 
 export default function DenialCodesPage() {
   const [codes, setCodes] = useState<DenialCode[]>([]);
+  const [analytics, setAnalytics] = useState<AnalyticsRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [tab, setTab] = useState<"reference" | "analytics">("reference");
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<"amount" | "count" | "winrate">("amount");
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 300);
@@ -50,6 +72,12 @@ export default function DenialCodesPage() {
       .then(setCodes)
       .finally(() => setLoading(false));
   }, [debouncedSearch]);
+
+  useEffect(() => {
+    fetch("/api/v1/analytics/denial-codes")
+      .then((r) => r.json())
+      .then((d) => setAnalytics(d.codes || []));
+  }, []);
 
   const grouped = codes.reduce<Record<string, DenialCode[]>>((acc, code) => {
     const cat = code.category;
@@ -72,6 +100,31 @@ export default function DenialCodesPage() {
         </p>
       </header>
 
+      {/* Tab switcher */}
+      <div className="mb-6 flex gap-2">
+        {(["reference", "analytics"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`rounded px-3 py-1.5 text-sm ${
+              tab === t ? "bg-ink-950 text-white" : "border border-ink-200 text-ink-600 hover:bg-ink-50"
+            }`}
+          >
+            {t === "reference" ? "Code Reference" : "Analytics"}
+          </button>
+        ))}
+      </div>
+
+      {tab === "analytics" ? (
+        <AnalyticsView
+          analytics={analytics}
+          expanded={expanded}
+          setExpanded={setExpanded}
+          sortBy={sortBy}
+          setSortBy={setSortBy}
+        />
+      ) : (
+      <>
       {/* Search */}
       <div className="mb-6">
         <input
@@ -132,6 +185,117 @@ export default function DenialCodesPage() {
           ))}
         </div>
       )}
+      </>
+      )}
     </main>
+  );
+}
+
+function AnalyticsView({
+  analytics,
+  expanded,
+  setExpanded,
+  sortBy,
+  setSortBy,
+}: {
+  analytics: AnalyticsRow[];
+  expanded: string | null;
+  setExpanded: (v: string | null) => void;
+  sortBy: "amount" | "count" | "winrate";
+  setSortBy: (v: "amount" | "count" | "winrate") => void;
+}) {
+  const sorted = [...analytics].sort((a, b) => {
+    if (sortBy === "amount") return b.total_denied_cents - a.total_denied_cents;
+    if (sortBy === "count") return b.total_claims - a.total_claims;
+    return b.win_rate - a.win_rate;
+  });
+  const totalDenied = analytics.reduce((s, c) => s + c.total_denied_cents, 0);
+  const totalClaims = analytics.reduce((s, c) => s + c.total_claims, 0);
+
+  return (
+    <>
+      <div className="mb-6 grid grid-cols-3 gap-4">
+        <div className="rounded-lg border border-ink-200 bg-white p-4">
+          <p className="text-xs text-ink-500">Unique Codes</p>
+          <p className="mt-1 text-2xl font-semibold text-ink-950">{analytics.length}</p>
+        </div>
+        <div className="rounded-lg border border-ink-200 bg-white p-4">
+          <p className="text-xs text-ink-500">Total Claims</p>
+          <p className="mt-1 text-2xl font-semibold text-ink-950">{totalClaims}</p>
+        </div>
+        <div className="rounded-lg border border-ink-200 bg-white p-4">
+          <p className="text-xs text-ink-500">Total Denied</p>
+          <p className="mt-1 text-2xl font-semibold text-ink-950">{dollars(totalDenied)}</p>
+        </div>
+      </div>
+
+      <div className="mb-4 flex gap-2">
+        <span className="text-xs text-ink-500 leading-6">Sort by:</span>
+        {(["amount", "count", "winrate"] as const).map((s) => (
+          <button
+            key={s}
+            onClick={() => setSortBy(s)}
+            className={`rounded px-2 py-1 text-xs ${
+              sortBy === s ? "bg-ink-900 text-white" : "border border-ink-200 text-ink-600 hover:bg-ink-50"
+            }`}
+          >
+            {s === "amount" ? "Amount" : s === "count" ? "Volume" : "Win Rate"}
+          </button>
+        ))}
+      </div>
+
+      <div className="space-y-3">
+        {sorted.map((c) => {
+          const pct = totalDenied > 0 ? (c.total_denied_cents / totalDenied) * 100 : 0;
+          const isExp = expanded === c.code;
+          return (
+            <div key={c.code} className="rounded-lg border border-ink-200 bg-white overflow-hidden">
+              <button
+                onClick={() => setExpanded(isExp ? null : c.code)}
+                className="flex w-full items-center gap-4 px-4 py-3 text-left hover:bg-ink-50/50 transition"
+              >
+                <span className="w-20 font-mono text-sm font-semibold text-ink-900">{c.code}</span>
+                <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${CATEGORY_COLORS[c.category] || "bg-ink-100 text-ink-600"}`}>
+                  {c.category}
+                </span>
+                <div className="flex-1">
+                  <div className="h-1.5 w-full rounded bg-ink-100">
+                    <div className="h-1.5 rounded bg-ink-400" style={{ width: `${Math.min(pct, 100)}%` }} />
+                  </div>
+                </div>
+                <div className="flex items-center gap-6 text-xs text-ink-600">
+                  <span>{c.total_claims} claims</span>
+                  <span className="font-mono">{dollars(c.total_denied_cents)}</span>
+                  <span>Win <span className={c.win_rate >= 50 ? "text-emerald-600 font-semibold" : c.win_rate > 0 ? "text-amber-600" : "text-ink-400"}>{c.win_rate}%</span></span>
+                  <span className="text-ink-300">{isExp ? "▲" : "▼"}</span>
+                </div>
+              </button>
+              {isExp && (
+                <div className="border-t border-ink-100 px-4 py-3 bg-ink-50/30">
+                  <div className="grid grid-cols-4 gap-4 text-xs">
+                    <div><p className="text-ink-400">Avg Amount</p><p className="font-mono font-semibold text-ink-700">{dollars(c.avg_amount_cents)}</p></div>
+                    <div><p className="text-ink-400">Won</p><p className="font-semibold text-emerald-600">{c.won}</p></div>
+                    <div><p className="text-ink-400">Lost</p><p className="font-semibold text-red-600">{c.lost}</p></div>
+                    <div><p className="text-ink-400">Pending</p><p className="font-semibold text-amber-600">{c.pending}</p></div>
+                  </div>
+                  {c.payers.length > 0 && (
+                    <div className="mt-3">
+                      <p className="mb-1 text-[10px] font-semibold uppercase text-ink-400">Payer Distribution</p>
+                      <div className="flex flex-wrap gap-2">
+                        {c.payers.map((p) => (
+                          <span key={p.payer} className="rounded bg-white border border-ink-200 px-2 py-0.5 text-[10px] text-ink-600">
+                            {p.payer}: {p.count}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
   );
 }
