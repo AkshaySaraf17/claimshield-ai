@@ -1555,3 +1555,121 @@ def _pattern_recommendation(category: str, won: int, lost: int, total: int) -> s
         "Information": "Implement pre-submission checks for required claim data elements.",
     }
     return recs.get(category, "Review denial pattern and consider targeted process improvements.")
+
+
+# ── Payer Performance Analytics ────────────────────────────────────────
+
+@app.get("/api/v1/analytics/payer-performance")
+async def payer_performance(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        q = select(Claim).where(Claim.tenant_id == tenant_id)
+        result = await session.execute(q)
+        claims = result.scalars().all()
+
+        aq = select(Appeal).where(Appeal.tenant_id == tenant_id)
+        ar = await session.execute(aq)
+        appeals = ar.scalars().all()
+
+    appeals_by_claim: dict[str, list] = {}
+    for a in appeals:
+        appeals_by_claim.setdefault(a.claim_id, []).append(a)
+
+    payer_data: dict[str, dict] = {}
+    for c in claims:
+        payer = c.payer_name or "Unknown"
+        if payer not in payer_data:
+            payer_data[payer] = {
+                "payer": payer,
+                "total_claims": 0,
+                "total_denied_cents": 0,
+                "total_recovered_cents": 0,
+                "statuses": {},
+                "denial_codes": {},
+                "appeals_filed": 0,
+                "appeals_won": 0,
+                "appeals_lost": 0,
+                "avg_days_to_appeal": None,
+                "_appeal_days": [],
+            }
+        pd = payer_data[payer]
+        pd["total_claims"] += 1
+        pd["total_denied_cents"] += c.amount_denied_cents or 0
+        pd["total_recovered_cents"] += c.amount_approved_cents or 0
+        s = c.status or "unknown"
+        pd["statuses"][s] = pd["statuses"].get(s, 0) + 1
+        if c.denial_code:
+            pd["denial_codes"][c.denial_code] = pd["denial_codes"].get(c.denial_code, 0) + 1
+
+        claim_appeals = appeals_by_claim.get(c.id, [])
+        pd["appeals_filed"] += len(claim_appeals)
+        if c.status == "won":
+            pd["appeals_won"] += len(claim_appeals)
+        elif c.status == "lost":
+            pd["appeals_lost"] += len(claim_appeals)
+        for ap in claim_appeals:
+            if ap.created_at and c.created_at:
+                delta = (ap.created_at - c.created_at).days
+                if delta >= 0:
+                    pd["_appeal_days"].append(delta)
+
+    result_list = []
+    for pd in payer_data.values():
+        days = pd.pop("_appeal_days")
+        pd["avg_days_to_appeal"] = round(sum(days) / len(days), 1) if days else None
+        decided = pd["appeals_won"] + pd["appeals_lost"]
+        pd["win_rate"] = round(pd["appeals_won"] / decided * 100, 1) if decided > 0 else None
+        pd["recovery_rate"] = (
+            round(pd["total_recovered_cents"] / pd["total_denied_cents"] * 100, 1)
+            if pd["total_denied_cents"] > 0 else None
+        )
+        pd["top_denial_codes"] = sorted(
+            [{"code": k, "count": v} for k, v in pd["denial_codes"].items()],
+            key=lambda x: x["count"], reverse=True,
+        )[:5]
+        del pd["denial_codes"]
+        result_list.append(pd)
+
+    result_list.sort(key=lambda x: x["total_denied_cents"], reverse=True)
+    return result_list
+
+
+# ── Financial Recovery Tracker ─────────────────────────────────────────
+
+@app.get("/api/v1/analytics/recovery")
+async def recovery_tracker(request: Request, period_days: int = Query(default=90, ge=7, le=365)):
+    tenant_id = _get_tenant_id(request)
+    cutoff = datetime.utcnow() - timedelta(days=period_days)
+
+    async with app.state.session_factory() as session:
+        q = select(Claim).where(Claim.tenant_id == tenant_id, Claim.created_at >= cutoff)
+        result = await session.execute(q)
+        claims = result.scalars().all()
+
+    weekly: dict[str, dict] = {}
+    for c in claims:
+        week_start = c.created_at.strftime("%Y-W%U")
+        if week_start not in weekly:
+            weekly[week_start] = {"week": week_start, "denied_cents": 0, "recovered_cents": 0, "claims": 0}
+        weekly[week_start]["denied_cents"] += c.amount_denied_cents or 0
+        weekly[week_start]["recovered_cents"] += c.amount_approved_cents or 0
+        weekly[week_start]["claims"] += 1
+
+    weeks = sorted(weekly.values(), key=lambda w: w["week"])
+    for w in weeks:
+        w["recovery_pct"] = (
+            round(w["recovered_cents"] / w["denied_cents"] * 100, 1)
+            if w["denied_cents"] > 0 else 0.0
+        )
+
+    total_denied = sum(c.amount_denied_cents or 0 for c in claims)
+    total_recovered = sum(c.amount_approved_cents or 0 for c in claims)
+
+    return {
+        "period_days": period_days,
+        "total_denied_cents": total_denied,
+        "total_recovered_cents": total_recovered,
+        "recovery_rate": round(total_recovered / total_denied * 100, 1) if total_denied > 0 else 0.0,
+        "total_claims": len(claims),
+        "weekly_trend": weeks,
+    }
