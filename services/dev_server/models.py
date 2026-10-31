@@ -145,6 +145,32 @@ class ClaimAssignment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
 
 
+class ClaimTag(Base):
+    __tablename__ = "claim_tags"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    claim_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    tag: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
+
+
+class PayerResponse(Base):
+    __tablename__ = "payer_responses"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    claim_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    appeal_id: Mapped[str | None] = mapped_column(String(36))
+    response_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    response_text: Mapped[str | None] = mapped_column(Text)
+    amount_approved_cents: Mapped[int | None] = mapped_column(BigInteger)
+    received_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
+    recorded_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 

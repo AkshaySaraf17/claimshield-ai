@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, Tenant, Clinic, Claim, Appeal, ClaimNote, ClaimAttachment, UserPreference, AuditLog, CustomTemplate, ClaimAssignment
+from .models import Base, Tenant, Clinic, Claim, Appeal, ClaimNote, ClaimAttachment, UserPreference, AuditLog, CustomTemplate, ClaimAssignment, ClaimTag, PayerResponse
 from .seed import DEV_TENANT_ID, DEV_CLINIC_ID, DEV_USER_ID, build_seed_objects
 
 import sys
@@ -3122,7 +3122,7 @@ async def escalate_claim(claim_id: str, request: Request):
             raise HTTPException(404, "Claim not found")
 
         note = ClaimNote(
-            id=str(uuid4()),
+            id=str(uuid.uuid4()),
             tenant_id=tenant_id,
             claim_id=claim_id,
             author_id=user_id,
@@ -3133,3 +3133,284 @@ async def escalate_claim(claim_id: str, request: Request):
         await session.commit()
 
     return {"status": "escalated", "claim_id": claim_id, "note_id": note.id}
+
+
+# ---------------------------------------------------------------------------
+# Team Performance
+# ---------------------------------------------------------------------------
+
+TEAM_MEMBERS = {
+    "dev-user-001": "Alice Chen",
+    "dev-user-002": "Bob Martinez",
+    "dev-user-003": "Carol Williams",
+    "dev-user-004": "David Kim",
+}
+
+@app.get("/api/v1/analytics/team-performance")
+async def team_performance(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        claims = (await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id)
+        )).scalars().all()
+
+        assignments = (await session.execute(
+            select(ClaimAssignment).where(ClaimAssignment.tenant_id == tenant_id)
+        )).scalars().all()
+
+        appeals = (await session.execute(
+            select(Appeal).where(Appeal.tenant_id == tenant_id)
+        )).scalars().all()
+
+        audits = (await session.execute(
+            select(AuditLog).where(AuditLog.tenant_id == tenant_id)
+        )).scalars().all()
+
+    claim_map = {c.id: c for c in claims}
+    appeal_map: dict[str, list] = {}
+    for a in appeals:
+        appeal_map.setdefault(a.claim_id, []).append(a)
+
+    assigned_claims: dict[str, list[str]] = {}
+    for a in assignments:
+        assigned_claims.setdefault(a.assigned_to, []).append(a.claim_id)
+
+    actions_by_user: dict[str, int] = {}
+    for a in audits:
+        actions_by_user[a.actor_id] = actions_by_user.get(a.actor_id, 0) + 1
+
+    result = []
+    for user_id, name in TEAM_MEMBERS.items():
+        user_claim_ids = set(assigned_claims.get(user_id, []))
+        user_claims = [claim_map[cid] for cid in user_claim_ids if cid in claim_map]
+        total = len(user_claims)
+        won = sum(1 for c in user_claims if c.status == "won")
+        lost = sum(1 for c in user_claims if c.status == "lost")
+        pending = sum(1 for c in user_claims if c.status in ("pending_review", "in_progress", "needs_review"))
+        decided = won + lost
+        win_rate = round(won / decided, 2) if decided > 0 else None
+
+        total_denied = sum(c.amount_denied_cents or 0 for c in user_claims)
+        total_recovered = sum(c.amount_approved_cents or 0 for c in user_claims if c.status == "won")
+
+        appeals_drafted = 0
+        for cid in user_claim_ids:
+            appeals_drafted += len(appeal_map.get(cid, []))
+
+        result.append({
+            "user_id": user_id,
+            "name": name,
+            "claims_assigned": total,
+            "claims_won": won,
+            "claims_lost": lost,
+            "claims_pending": pending,
+            "win_rate": win_rate,
+            "total_denied_cents": total_denied,
+            "total_recovered_cents": total_recovered,
+            "appeals_drafted": appeals_drafted,
+            "audit_actions": actions_by_user.get(user_id, 0),
+        })
+
+    result.sort(key=lambda x: x["claims_assigned"], reverse=True)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Claim Tags
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/claims/{claim_id}/tags")
+async def get_claim_tags(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        tags = (await session.execute(
+            select(ClaimTag).where(ClaimTag.claim_id == claim_id, ClaimTag.tenant_id == tenant_id)
+        )).scalars().all()
+    return [{"id": t.id, "tag": t.tag, "created_by": t.created_by, "created_at": t.created_at.isoformat()} for t in tags]
+
+
+@app.post("/api/v1/claims/{claim_id}/tags", status_code=201)
+async def add_claim_tag(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON body")
+    tag_name = body.get("tag", "").strip()
+    if not tag_name:
+        raise HTTPException(400, "Tag name required")
+
+    async with request.app.state.session_factory() as session:
+        existing = (await session.execute(
+            select(ClaimTag).where(
+                ClaimTag.claim_id == claim_id,
+                ClaimTag.tenant_id == tenant_id,
+                ClaimTag.tag == tag_name,
+            )
+        )).scalar_one_or_none()
+        if existing:
+            raise HTTPException(409, "Tag already exists on this claim")
+
+        tag = ClaimTag(
+            id=str(uuid.uuid4()),
+            tenant_id=tenant_id,
+            claim_id=claim_id,
+            tag=tag_name,
+            created_by=user_id,
+        )
+        session.add(tag)
+        await _write_audit(session, tenant_id, user_id, "tag.added", "claim", claim_id, {"tag": tag_name})
+        await session.commit()
+
+    return {"id": tag.id, "tag": tag.tag, "created_by": tag.created_by}
+
+
+@app.delete("/api/v1/claims/{claim_id}/tags/{tag_id}")
+async def remove_claim_tag(claim_id: str, tag_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with request.app.state.session_factory() as session:
+        tag = (await session.execute(
+            select(ClaimTag).where(ClaimTag.id == tag_id, ClaimTag.tenant_id == tenant_id)
+        )).scalar_one_or_none()
+        if not tag:
+            raise HTTPException(404, "Tag not found")
+        tag_name = tag.tag
+        await session.delete(tag)
+        await _write_audit(session, tenant_id, user_id, "tag.removed", "claim", claim_id, {"tag": tag_name})
+        await session.commit()
+    return {"status": "removed"}
+
+
+@app.get("/api/v1/tags")
+async def list_all_tags(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        rows = (await session.execute(
+            select(ClaimTag.tag, func.count(ClaimTag.id).label("count"))
+            .where(ClaimTag.tenant_id == tenant_id)
+            .group_by(ClaimTag.tag)
+            .order_by(func.count(ClaimTag.id).desc())
+        )).all()
+    return [{"tag": r[0], "count": r[1]} for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Payer Response Tracking
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/claims/{claim_id}/responses")
+async def get_payer_responses(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        responses = (await session.execute(
+            select(PayerResponse)
+            .where(PayerResponse.claim_id == claim_id, PayerResponse.tenant_id == tenant_id)
+            .order_by(PayerResponse.received_at.desc())
+        )).scalars().all()
+    return [{
+        "id": r.id,
+        "claim_id": r.claim_id,
+        "appeal_id": r.appeal_id,
+        "response_type": r.response_type,
+        "response_text": r.response_text,
+        "amount_approved_cents": r.amount_approved_cents,
+        "received_at": r.received_at.isoformat(),
+        "recorded_by": r.recorded_by,
+    } for r in responses]
+
+
+@app.post("/api/v1/claims/{claim_id}/responses", status_code=201)
+async def record_payer_response(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    body = await request.json()
+    response_type = body.get("response_type", "")
+    if response_type not in ("approved", "denied", "partial", "additional_info_requested", "other"):
+        raise HTTPException(400, "Invalid response_type")
+
+    async with request.app.state.session_factory() as session:
+        claim = (await session.execute(
+            select(Claim).where(Claim.id == claim_id, Claim.tenant_id == tenant_id)
+        )).scalar_one_or_none()
+        if not claim:
+            raise HTTPException(404, "Claim not found")
+
+        resp = PayerResponse(
+            id=str(uuid.uuid4()),
+            tenant_id=tenant_id,
+            claim_id=claim_id,
+            appeal_id=body.get("appeal_id"),
+            response_type=response_type,
+            response_text=body.get("response_text"),
+            amount_approved_cents=body.get("amount_approved_cents"),
+            recorded_by=user_id,
+        )
+        session.add(resp)
+        await _write_audit(session, tenant_id, user_id, "payer_response.recorded", "claim", claim_id, {
+            "response_type": response_type,
+            "amount_approved_cents": body.get("amount_approved_cents"),
+        })
+        await session.commit()
+
+    return {"id": resp.id, "response_type": resp.response_type}
+
+
+# ---------------------------------------------------------------------------
+# Provider / Clinic Analytics
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/analytics/clinics")
+async def clinic_analytics(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        clinics = (await session.execute(
+            select(Clinic).where(Clinic.tenant_id == tenant_id)
+        )).scalars().all()
+
+        claims = (await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id)
+        )).scalars().all()
+
+    clinic_map = {c.id: c for c in clinics}
+    stats: dict[str, dict] = {}
+    for c in claims:
+        cid = c.clinic_id
+        if cid not in stats:
+            clinic = clinic_map.get(cid)
+            stats[cid] = {
+                "clinic_id": cid,
+                "clinic_name": clinic.name if clinic else "Unknown",
+                "npi": clinic.npi if clinic else None,
+                "total_claims": 0,
+                "total_denied_cents": 0,
+                "total_recovered_cents": 0,
+                "won": 0,
+                "lost": 0,
+                "pending": 0,
+                "top_denial_codes": {},
+            }
+        s = stats[cid]
+        s["total_claims"] += 1
+        s["total_denied_cents"] += c.amount_denied_cents or 0
+        if c.status == "won":
+            s["won"] += 1
+            s["total_recovered_cents"] += c.amount_approved_cents or 0
+        elif c.status == "lost":
+            s["lost"] += 1
+        elif c.status in ("pending_review", "in_progress", "needs_review"):
+            s["pending"] += 1
+        if c.denial_code:
+            s["top_denial_codes"][c.denial_code] = s["top_denial_codes"].get(c.denial_code, 0) + 1
+
+    result = []
+    for s in stats.values():
+        decided = s["won"] + s["lost"]
+        s["win_rate"] = round(s["won"] / decided, 2) if decided > 0 else None
+        codes = sorted(s["top_denial_codes"].items(), key=lambda x: -x[1])[:5]
+        s["top_denial_codes"] = [{"code": k, "count": v} for k, v in codes]
+        result.append(s)
+
+    result.sort(key=lambda x: x["total_denied_cents"], reverse=True)
+    return result

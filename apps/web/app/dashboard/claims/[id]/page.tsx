@@ -99,6 +99,14 @@ export default function ClaimDetailPage() {
     factors: { factor: string; impact: string; direction: string }[];
     recommendation: string;
   } | null>(null);
+  const [tags, setTags] = useState<{ id: string; tag: string; created_by: string }[]>([]);
+  const [newTag, setNewTag] = useState("");
+  const [addingTag, setAddingTag] = useState(false);
+  const [payerResponses, setPayerResponses] = useState<{
+    id: string; response_type: string; response_text: string | null;
+    amount_approved_cents: number | null; received_at: string; recorded_by: string;
+  }[]>([]);
+  const [addingResponse, setAddingResponse] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -121,11 +129,24 @@ export default function ClaimDetailPage() {
       if (timelineRes.ok) setTimeline(await timelineRes.json());
       const predictRes = await fetch(`/api/v1/claims/${claimId}/predict`);
       if (predictRes.ok) setPrediction(await predictRes.json());
+      const [tagsRes, responsesRes] = await Promise.all([
+        fetch(`/api/v1/claims/${claimId}/tags`),
+        fetch(`/api/v1/claims/${claimId}/responses`),
+      ]);
+      if (tagsRes.ok) setTags(await tagsRes.json());
+      if (responsesRes.ok) setPayerResponses(await responsesRes.json());
       const [teamRes, assignRes] = await Promise.all([
         fetch("/api/v1/team-members"),
         fetch(`/api/v1/assignments?claim_id=${claimId}`),
       ]);
-      if (teamRes.ok) setTeamMembers(await teamRes.json());
+      if (teamRes.ok) {
+        const tmData = await teamRes.json();
+        if (Array.isArray(tmData)) {
+          setTeamMembers(tmData);
+        } else {
+          setTeamMembers(Object.entries(tmData).map(([id, name]) => ({ id, name: name as string, role: "biller" })));
+        }
+      }
       if (assignRes.ok) {
         const all = await assignRes.json();
         setAssignments(Array.isArray(all) ? all.filter((a: { claim_id: string }) => a.claim_id === claimId) : []);
@@ -538,6 +559,129 @@ export default function ClaimDetailPage() {
                 <span className="text-ink-400">{a.created_at ? new Date(a.created_at).toLocaleDateString() : ""}</span>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      {/* Tags */}
+      <div className="mt-8">
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-500">Tags</h2>
+        <div className="flex flex-wrap items-center gap-2 mb-2">
+          {tags.map((t) => (
+            <span
+              key={t.id}
+              className="inline-flex items-center gap-1 rounded-full border border-ink-200 bg-ink-50 px-2.5 py-0.5 text-xs text-ink-700"
+            >
+              {t.tag}
+              <button
+                onClick={async () => {
+                  await fetch(`/api/v1/claims/${claimId}/tags/${t.id}`, { method: "DELETE" });
+                  await fetchData();
+                }}
+                className="ml-0.5 text-ink-400 hover:text-red-500"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!newTag.trim()) return;
+              setAddingTag(true);
+              await fetch(`/api/v1/claims/${claimId}/tags`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ tag: newTag.trim() }),
+              });
+              setNewTag("");
+              setAddingTag(false);
+              await fetchData();
+            }}
+            className="inline-flex gap-1"
+          >
+            <input
+              type="text"
+              value={newTag}
+              onChange={(e) => setNewTag(e.target.value)}
+              placeholder="Add tag..."
+              className="w-24 rounded border border-ink-200 px-2 py-0.5 text-xs focus:border-ledger-500 focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={addingTag || !newTag.trim()}
+              className="rounded bg-ink-800 px-2 py-0.5 text-[10px] text-white hover:bg-ink-700 disabled:opacity-50"
+            >
+              +
+            </button>
+          </form>
+        </div>
+      </div>
+
+      {/* Payer Responses */}
+      <div className="mt-8">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-500">
+            Payer Responses ({payerResponses.length})
+          </h2>
+          <button
+            onClick={async () => {
+              const responseType = prompt("Response type (approved/denied/partial/additional_info_requested/other):");
+              if (!responseType) return;
+              const responseText = prompt("Response details:") || undefined;
+              const amountStr = prompt("Amount approved (cents, or leave blank):") || undefined;
+              setAddingResponse(true);
+              await fetch(`/api/v1/claims/${claimId}/responses`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  response_type: responseType,
+                  response_text: responseText,
+                  amount_approved_cents: amountStr ? parseInt(amountStr) : undefined,
+                }),
+              });
+              setAddingResponse(false);
+              await fetchData();
+            }}
+            disabled={addingResponse}
+            className="rounded bg-ink-950 px-3 py-1 text-xs font-medium text-white hover:bg-ink-900 disabled:opacity-50"
+          >
+            {addingResponse ? "Recording..." : "Record Response"}
+          </button>
+        </div>
+        {payerResponses.length > 0 && (
+          <div className="space-y-2">
+            {payerResponses.map((r) => {
+              const typeColors: Record<string, string> = {
+                approved: "bg-emerald-100 text-emerald-700",
+                denied: "bg-red-100 text-red-700",
+                partial: "bg-amber-100 text-amber-700",
+                additional_info_requested: "bg-blue-100 text-blue-700",
+                other: "bg-ink-100 text-ink-600",
+              };
+              return (
+                <div key={r.id} className="rounded border border-ink-200 bg-white px-4 py-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${typeColors[r.response_type] || typeColors.other}`}>
+                        {r.response_type.replace(/_/g, " ")}
+                      </span>
+                      {r.amount_approved_cents != null && (
+                        <span className="font-mono text-xs text-emerald-600">
+                          {centsToDisplay(r.amount_approved_cents)}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-ink-400">
+                      {new Date(r.received_at).toLocaleDateString()}
+                    </span>
+                  </div>
+                  {r.response_text && (
+                    <p className="mt-1 text-xs text-ink-600">{r.response_text}</p>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
