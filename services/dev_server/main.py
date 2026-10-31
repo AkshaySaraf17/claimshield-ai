@@ -2400,3 +2400,126 @@ async def user_activity(request: Request, days: int = Query(default=30, le=365))
     }
 
 
+# ── Claim Merge ──────────────────────────────────────────────────────
+
+
+class MergeRequest(BaseModel):
+    primary_claim_id: str
+    secondary_claim_ids: list[str]
+
+
+@app.post("/api/v1/claims/merge")
+async def merge_claims(req: Request, body: MergeRequest):
+    tenant_id = _get_tenant_id(req)
+    user_id = _get_user_id(req)
+    async with req.app.state.session_factory() as s:
+        primary = await s.get(Claim, body.primary_claim_id)
+        if not primary or primary.tenant_id != tenant_id:
+            return JSONResponse({"detail": "Primary claim not found"}, 404)
+
+        merged_ids = []
+        for sec_id in body.secondary_claim_ids:
+            sec = await s.get(Claim, sec_id)
+            if not sec or sec.tenant_id != tenant_id:
+                continue
+            if sec.id == primary.id:
+                continue
+
+            if sec.raw_clinical_notes and sec.raw_clinical_notes != primary.raw_clinical_notes:
+                existing = primary.raw_clinical_notes or ""
+                primary.raw_clinical_notes = existing + "\n\n--- merged from " + (sec.claim_number or sec.id) + " ---\n" + sec.raw_clinical_notes
+
+            if sec.raw_denial_text and sec.raw_denial_text != primary.raw_denial_text:
+                existing = primary.raw_denial_text or ""
+                primary.raw_denial_text = existing + "\n\n--- merged from " + (sec.claim_number or sec.id) + " ---\n" + sec.raw_denial_text
+
+            sec.status = "cancelled"
+            note = ClaimNote(
+                id=str(uuid.uuid4()),
+                tenant_id=tenant_id,
+                claim_id=sec.id,
+                author_id=user_id,
+                body=f"Merged into {primary.claim_number or primary.id}",
+            )
+            s.add(note)
+            merged_ids.append(sec.id)
+
+        primary_note = ClaimNote(
+            id=str(uuid.uuid4()),
+            tenant_id=tenant_id,
+            claim_id=primary.id,
+            author_id=user_id,
+            body=f"Absorbed {len(merged_ids)} claim(s): {', '.join(merged_ids[:5])}",
+        )
+        s.add(primary_note)
+
+        await _write_audit(s, tenant_id, user_id, "claim.merged", "claim", primary.id, {"merged_ids": merged_ids})
+        await s.commit()
+
+    return {"primary_id": primary.id, "merged_count": len(merged_ids), "merged_ids": merged_ids}
+
+
+# ── Filing Deadline Calendar ──────────────────────────────────────────
+
+
+PAYER_DEADLINES_DAYS: dict[str, int] = {
+    "Aetna": 90,
+    "Blue Cross Blue Shield": 120,
+    "Cigna": 90,
+    "UnitedHealthcare": 180,
+    "Medicare": 120,
+    "Medicaid": 90,
+}
+DEFAULT_DEADLINE_DAYS = 90
+
+
+@app.get("/api/v1/calendar/deadlines")
+async def calendar_deadlines(req: Request):
+    tenant_id = _get_tenant_id(req)
+    async with req.app.state.session_factory() as s:
+        result = await s.execute(
+            select(Claim).where(
+                Claim.tenant_id == tenant_id,
+                Claim.status.in_(["pending_review", "in_progress", "needs_review"]),
+            )
+        )
+        claims = result.scalars().all()
+
+    events = []
+    now = datetime.now(timezone.utc)
+    for c in claims:
+        deadline_days = PAYER_DEADLINES_DAYS.get(c.payer_name, DEFAULT_DEADLINE_DAYS) if c.payer_name else DEFAULT_DEADLINE_DAYS
+        created = c.created_at if c.created_at.tzinfo else c.created_at.replace(tzinfo=timezone.utc)
+        deadline_date = created + timedelta(days=deadline_days)
+        days_remaining = (deadline_date - now).days
+
+        events.append({
+            "claim_id": c.id,
+            "claim_number": c.claim_number,
+            "payer_name": c.payer_name,
+            "denial_code": c.denial_code,
+            "amount_denied_cents": c.amount_denied_cents,
+            "status": c.status,
+            "created_at": c.created_at.isoformat(),
+            "deadline_date": deadline_date.isoformat(),
+            "deadline_days": deadline_days,
+            "days_remaining": days_remaining,
+            "is_overdue": days_remaining < 0,
+            "is_urgent": 0 <= days_remaining <= 14,
+        })
+
+    events.sort(key=lambda e: e["days_remaining"])
+    overdue = sum(1 for e in events if e["is_overdue"])
+    urgent = sum(1 for e in events if e["is_urgent"])
+
+    return {
+        "events": events,
+        "total": len(events),
+        "overdue": overdue,
+        "urgent": urgent,
+        "payer_deadlines": PAYER_DEADLINES_DAYS,
+    }
+
+
+
+
