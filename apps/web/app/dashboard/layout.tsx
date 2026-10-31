@@ -60,6 +60,9 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard/payer-intel", label: "Intel" },
   { href: "/dashboard/appeal-compare", label: "Compare" },
   { href: "/dashboard/status-overview", label: "Status" },
+  { href: "/dashboard/recovery", label: "Recovery" },
+  { href: "/dashboard/claim-audit", label: "Audit" },
+  { href: "/dashboard/team-perf", label: "Perf" },
   { href: "/dashboard/audit", label: "Audit Log" },
   { href: "/dashboard/settings", label: "Settings" },
 ];

@@ -5124,3 +5124,145 @@ async def status_distribution(request: Request):
             .group_by(Claim.status)
         )).all()
     return [{"status": r.status, "count": r.count} for r in rows]
+
+
+# ── Revenue Recovery Tracker ────────────────────────────────────────────
+
+@app.get("/api/v1/analytics/recovery")
+async def revenue_recovery(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        claims = (await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id)
+        )).scalars().all()
+
+    total_denied = sum(c.amount_denied_cents or 0 for c in claims)
+    total_recovered = sum(c.amount_approved_cents or 0 for c in claims if c.status == "won")
+    total_pending = sum(c.amount_denied_cents or 0 for c in claims if c.status in ("pending_review", "in_progress", "needs_review", "approved", "sent"))
+    total_lost = sum(c.amount_denied_cents or 0 for c in claims if c.status == "lost")
+    won_count = sum(1 for c in claims if c.status == "won")
+    lost_count = sum(1 for c in claims if c.status == "lost")
+    recovery_rate = round(total_recovered / total_denied * 100, 1) if total_denied > 0 else 0
+
+    by_payer: dict[str, dict] = {}
+    for c in claims:
+        payer = c.payer_name or "Unknown"
+        if payer not in by_payer:
+            by_payer[payer] = {"payer": payer, "denied_cents": 0, "recovered_cents": 0}
+        by_payer[payer]["denied_cents"] += c.amount_denied_cents or 0
+        if c.status == "won":
+            by_payer[payer]["recovered_cents"] += c.amount_approved_cents or 0
+
+    return {
+        "total_denied_cents": total_denied,
+        "total_recovered_cents": total_recovered,
+        "total_pending_cents": total_pending,
+        "total_lost_cents": total_lost,
+        "won_count": won_count,
+        "lost_count": lost_count,
+        "recovery_rate": recovery_rate,
+        "by_payer": sorted(by_payer.values(), key=lambda x: x["denied_cents"], reverse=True),
+    }
+
+
+# ── Per-Claim Audit Trail ──────────────────────────────────────────────
+
+@app.get("/api/v1/claims/{claim_id}/audit-trail")
+async def claim_audit_trail(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        rows = (await session.execute(
+            select(AuditLog).where(
+                AuditLog.tenant_id == tenant_id,
+                AuditLog.resource_id == claim_id,
+            ).order_by(AuditLog.created_at.desc())
+        )).scalars().all()
+
+    return [
+        {
+            "id": r.id,
+            "action": r.action,
+            "actor": TEAM_MEMBERS.get(r.actor_id, r.actor_id),
+            "actor_id": r.actor_id,
+            "detail": r.detail,
+            "hash": r.hash[:12],
+            "created_at": r.created_at.isoformat(),
+        }
+        for r in rows
+    ]
+
+
+# ── Team Performance ────────────────────────────────────────────────────
+
+@app.get("/api/v1/analytics/team-performance")
+async def team_performance(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        claims = (await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id)
+        )).scalars().all()
+
+        assignments = (await session.execute(
+            select(ClaimAssignment).where(ClaimAssignment.tenant_id == tenant_id)
+        )).scalars().all()
+
+        audit_rows = (await session.execute(
+            select(AuditLog).where(AuditLog.tenant_id == tenant_id)
+        )).scalars().all()
+
+    claims_by_id = {c.id: c for c in claims}
+
+    latest_assignment: dict[str, str] = {}
+    for a in sorted(assignments, key=lambda x: x.created_at):
+        latest_assignment[a.claim_id] = a.assigned_to
+
+    actions_by_user: dict[str, int] = {}
+    for a in audit_rows:
+        actions_by_user[a.actor_id] = actions_by_user.get(a.actor_id, 0) + 1
+
+    by_user: dict[str, dict] = {}
+    for claim_id, user_id in latest_assignment.items():
+        claim = claims_by_id.get(claim_id)
+        if not claim:
+            continue
+        if user_id not in by_user:
+            by_user[user_id] = {
+                "user_id": user_id,
+                "user_name": TEAM_MEMBERS.get(user_id, user_id),
+                "claims_assigned": 0,
+                "won": 0,
+                "lost": 0,
+                "pending": 0,
+                "recovered_cents": 0,
+                "actions": actions_by_user.get(user_id, 0),
+            }
+        u = by_user[user_id]
+        u["claims_assigned"] += 1
+        if claim.status == "won":
+            u["won"] += 1
+            u["recovered_cents"] += claim.amount_approved_cents or 0
+        elif claim.status == "lost":
+            u["lost"] += 1
+        else:
+            u["pending"] += 1
+
+    result = []
+    for user_id in TEAM_MEMBERS:
+        if user_id in by_user:
+            u = by_user[user_id]
+        else:
+            u = {
+                "user_id": user_id,
+                "user_name": TEAM_MEMBERS[user_id],
+                "claims_assigned": 0,
+                "won": 0,
+                "lost": 0,
+                "pending": 0,
+                "recovered_cents": 0,
+                "actions": actions_by_user.get(user_id, 0),
+            }
+        u["win_rate"] = round(u["won"] / (u["won"] + u["lost"]) * 100, 1) if (u["won"] + u["lost"]) > 0 else None
+        result.append(u)
+
+    result.sort(key=lambda x: x["claims_assigned"], reverse=True)
+    return result
