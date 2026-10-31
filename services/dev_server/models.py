@@ -117,6 +117,34 @@ class UserPreference(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
 
 
+class CustomTemplate(Base):
+    __tablename__ = "custom_templates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(String(100), nullable=False)
+    sections: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    body_template: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
+
+
+class ClaimAssignment(Base):
+    __tablename__ = "claim_assignments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    claim_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    assigned_to: Mapped[str] = mapped_column(Text, nullable=False)
+    assigned_by: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 

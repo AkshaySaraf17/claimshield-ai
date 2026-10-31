@@ -89,6 +89,10 @@ export default function ClaimDetailPage() {
   const [timeline, setTimeline] = useState<
     { type: string; timestamp: string; title: string; detail: string }[]
   >([]);
+  const [teamMembers, setTeamMembers] = useState<{ id: string; name: string; role: string }[]>([]);
+  const [assignments, setAssignments] = useState<{ id: string; assigned_to: string; assignee_name: string; note: string | null; created_at: string }[]>([]);
+  const [assignTo, setAssignTo] = useState("");
+  const [assigning, setAssigning] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -109,6 +113,15 @@ export default function ClaimDetailPage() {
       if (attachRes.ok) setAttachments(await attachRes.json());
       const timelineRes = await fetch(`/api/v1/claims/${claimId}/timeline`);
       if (timelineRes.ok) setTimeline(await timelineRes.json());
+      const [teamRes, assignRes] = await Promise.all([
+        fetch("/api/v1/team-members"),
+        fetch(`/api/v1/assignments?claim_id=${claimId}`),
+      ]);
+      if (teamRes.ok) setTeamMembers(await teamRes.json());
+      if (assignRes.ok) {
+        const all = await assignRes.json();
+        setAssignments(Array.isArray(all) ? all.filter((a: { claim_id: string }) => a.claim_id === claimId) : []);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load claim");
     } finally {
@@ -244,6 +257,24 @@ export default function ClaimDetailPage() {
       }),
     });
     await fetchData();
+  }
+
+  async function handleAssign() {
+    if (!assignTo) return;
+    setAssigning(true);
+    try {
+      await fetch(`/api/v1/claims/${claimId}/assign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claim_id: claimId, assigned_to: assignTo }),
+      });
+      setAssignTo("");
+      await fetchData();
+    } catch {
+      setError("Failed to assign claim");
+    } finally {
+      setAssigning(false);
+    }
   }
 
   const centsToDisplay = (cents: number | null) =>
@@ -419,6 +450,42 @@ export default function ClaimDetailPage() {
                     </pre>
                   </div>
                 )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Assignment */}
+      <div className="mt-8">
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-500">
+          Assignment
+        </h2>
+        <div className="flex items-center gap-2 mb-2">
+          <select
+            value={assignTo}
+            onChange={(e) => setAssignTo(e.target.value)}
+            className="rounded border border-ink-300 px-2 py-1 text-sm"
+          >
+            <option value="">Select team member...</option>
+            {teamMembers.map((m) => (
+              <option key={m.id} value={m.id}>{m.name} ({m.role})</option>
+            ))}
+          </select>
+          <button
+            onClick={handleAssign}
+            disabled={!assignTo || assigning}
+            className="rounded bg-indigo-600 px-3 py-1 text-sm text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {assigning ? "Assigning..." : "Assign"}
+          </button>
+        </div>
+        {assignments.length > 0 && (
+          <div className="space-y-1">
+            {assignments.map((a) => (
+              <div key={a.id} className="flex items-center gap-2 text-xs text-ink-600">
+                <span className="rounded bg-indigo-50 px-1.5 py-0.5 font-medium text-indigo-700">{a.assignee_name}</span>
+                <span className="text-ink-400">{a.created_at ? new Date(a.created_at).toLocaleDateString() : ""}</span>
               </div>
             ))}
           </div>

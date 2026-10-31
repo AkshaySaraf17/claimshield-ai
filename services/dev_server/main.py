@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, Tenant, Clinic, Claim, Appeal, ClaimNote, ClaimAttachment, UserPreference, AuditLog
+from .models import Base, Tenant, Clinic, Claim, Appeal, ClaimNote, ClaimAttachment, UserPreference, AuditLog, CustomTemplate, ClaimAssignment
 from .seed import DEV_TENANT_ID, DEV_CLINIC_ID, DEV_USER_ID, build_seed_objects
 
 import sys
@@ -195,6 +195,128 @@ async def list_claims(
             ))
         result = await session.execute(q)
         return [_claim_dict(c) for c in result.scalars().all()]
+
+
+@app.get("/api/v1/claims/search")
+async def search_claims(
+    request: Request,
+    q: str | None = None,
+    status: str | None = None,
+    payer: str | None = None,
+    denial_code: str | None = None,
+    min_amount_cents: int | None = None,
+    max_amount_cents: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    assigned_to: str | None = None,
+    sort_by: str = "created_at",
+    sort_dir: str = "desc",
+    limit: int = Query(default=50, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    from sqlalchemy import or_
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        query = select(Claim).where(Claim.tenant_id == tenant_id)
+
+        if q:
+            pattern = f"%{q}%"
+            query = query.where(or_(
+                Claim.payer_name.ilike(pattern),
+                Claim.denial_code.ilike(pattern),
+                Claim.denial_reason.ilike(pattern),
+                Claim.claim_number.ilike(pattern),
+                Claim.patient_id.ilike(pattern),
+            ))
+        if status:
+            statuses = [s.strip() for s in status.split(",")]
+            if len(statuses) == 1:
+                query = query.where(Claim.status == statuses[0])
+            else:
+                query = query.where(Claim.status.in_(statuses))
+        if payer:
+            query = query.where(Claim.payer_name.ilike(f"%{payer}%"))
+        if denial_code:
+            query = query.where(Claim.denial_code == denial_code)
+        if min_amount_cents is not None:
+            query = query.where(Claim.amount_denied_cents >= min_amount_cents)
+        if max_amount_cents is not None:
+            query = query.where(Claim.amount_denied_cents <= max_amount_cents)
+        if date_from:
+            query = query.where(Claim.created_at >= datetime.fromisoformat(date_from))
+        if date_to:
+            query = query.where(Claim.created_at <= datetime.fromisoformat(date_to))
+
+        if assigned_to:
+            assigned_q = select(ClaimAssignment.claim_id).where(
+                ClaimAssignment.tenant_id == tenant_id,
+                ClaimAssignment.assigned_to == assigned_to,
+            )
+            assigned_result = await session.execute(assigned_q)
+            assigned_ids = [r[0] for r in assigned_result.all()]
+            if assigned_ids:
+                query = query.where(Claim.id.in_(assigned_ids))
+            else:
+                return {"claims": [], "total": 0}
+
+        sort_col = getattr(Claim, sort_by, Claim.created_at)
+        if sort_dir == "asc":
+            query = query.order_by(sort_col.asc())
+        else:
+            query = query.order_by(sort_col.desc())
+
+        count_q = select(func.count()).select_from(query.subquery())
+        count_result = await session.execute(count_q)
+        total = count_result.scalar() or 0
+
+        query = query.limit(limit).offset(offset)
+        result = await session.execute(query)
+        claims = [_claim_dict(c) for c in result.scalars().all()]
+
+        return {"claims": claims, "total": total}
+
+
+@app.get("/api/v1/claims/export")
+async def export_claims_csv(request: Request):
+    from starlette.responses import Response
+
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        q = (
+            select(Claim)
+            .where(Claim.tenant_id == tenant_id)
+            .order_by(Claim.created_at.desc())
+        )
+        result = await session.execute(q)
+        claims = result.scalars().all()
+
+    headers = [
+        "claim_number", "payer_name", "denial_code", "denial_reason",
+        "amount_denied", "status", "filing_deadline", "created_at",
+    ]
+    rows = [",".join(headers)]
+    for c in claims:
+        denied = f"{(c.amount_denied_cents or 0) / 100:.2f}"
+        deadline = c.filing_deadline.strftime("%Y-%m-%d") if c.filing_deadline else ""
+        created = c.created_at.strftime("%Y-%m-%d %H:%M") if c.created_at else ""
+        row = [
+            c.claim_number or "",
+            f'"{c.payer_name}"' if c.payer_name else "",
+            c.denial_code or "",
+            f'"{(c.denial_reason or "").replace(chr(34), chr(39))}"',
+            denied,
+            c.status,
+            deadline,
+            created,
+        ]
+        rows.append(",".join(row))
+
+    csv_content = "\n".join(rows)
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=claims_export.csv"},
+    )
 
 
 @app.get("/api/v1/claims/{claim_id}")
@@ -757,51 +879,6 @@ async def payer_analytics(request: Request):
         p["win_rate"] = round(recovered / denied * 100, 1) if denied > 0 else 0.0
 
     return result_list
-
-
-# ── CSV Export ───────────────────────────────────────────────────────────
-
-@app.get("/api/v1/claims/export")
-async def export_claims_csv(request: Request):
-    from starlette.responses import Response
-
-    tenant_id = _get_tenant_id(request)
-    async with app.state.session_factory() as session:
-        q = (
-            select(Claim)
-            .where(Claim.tenant_id == tenant_id)
-            .order_by(Claim.created_at.desc())
-        )
-        result = await session.execute(q)
-        claims = result.scalars().all()
-
-    headers = [
-        "claim_number", "payer_name", "denial_code", "denial_reason",
-        "amount_denied", "status", "filing_deadline", "created_at",
-    ]
-    rows = [",".join(headers)]
-    for c in claims:
-        denied = f"{(c.amount_denied_cents or 0) / 100:.2f}"
-        deadline = c.filing_deadline.strftime("%Y-%m-%d") if c.filing_deadline else ""
-        created = c.created_at.strftime("%Y-%m-%d %H:%M") if c.created_at else ""
-        row = [
-            c.claim_number or "",
-            f'"{c.payer_name}"' if c.payer_name else "",
-            c.denial_code or "",
-            f'"{(c.denial_reason or "").replace(chr(34), chr(39))}"',
-            denied,
-            c.status,
-            deadline,
-            created,
-        ]
-        rows.append(",".join(row))
-
-    csv_content = "\n".join(rows)
-    return Response(
-        content=csv_content,
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=claims_export.csv"},
-    )
 
 
 # ── Batch Status Transition ─────────────────────────────────────────────
@@ -1923,3 +2000,222 @@ async def get_alerts(request: Request):
 
     alerts.sort(key=lambda a: {"critical": 0, "warning": 1, "info": 2}.get(a["severity"], 3))
     return alerts
+
+
+# ── Custom Appeal Templates CRUD ─────────────────────────────────────
+
+class TemplateCreateRequest(BaseModel):
+    name: str
+    category: str
+    sections: list[str]
+    source: str
+    body_template: str | None = None
+
+
+class TemplateUpdateRequest(BaseModel):
+    name: str | None = None
+    category: str | None = None
+    sections: list[str] | None = None
+    source: str | None = None
+    body_template: str | None = None
+    is_active: bool | None = None
+
+
+def _template_dict(t: CustomTemplate) -> dict:
+    return {
+        "id": t.id,
+        "name": t.name,
+        "category": t.category,
+        "sections": json.loads(t.sections),
+        "source": t.source,
+        "body_template": t.body_template,
+        "is_active": t.is_active,
+        "created_by": t.created_by,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+    }
+
+
+@app.get("/api/v1/custom-templates")
+async def list_custom_templates(request: Request, active_only: bool = True):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        q = select(CustomTemplate).where(CustomTemplate.tenant_id == tenant_id).order_by(CustomTemplate.created_at.desc())
+        if active_only:
+            q = q.where(CustomTemplate.is_active == True)
+        result = await session.execute(q)
+        return [_template_dict(t) for t in result.scalars().all()]
+
+
+@app.post("/api/v1/custom-templates", status_code=201)
+async def create_custom_template(body: TemplateCreateRequest, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    t = CustomTemplate(
+        tenant_id=tenant_id,
+        name=body.name,
+        category=body.category,
+        sections=json.dumps(body.sections),
+        source=body.source,
+        body_template=body.body_template,
+        created_by=user_id,
+    )
+    async with app.state.session_factory() as session:
+        session.add(t)
+        await session.commit()
+        await session.refresh(t)
+        return _template_dict(t)
+
+
+@app.get("/api/v1/custom-templates/{template_id}")
+async def get_custom_template(template_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        t = await session.get(CustomTemplate, template_id)
+        if not t or t.tenant_id != tenant_id:
+            return JSONResponse({"detail": "Template not found"}, status_code=404)
+        return _template_dict(t)
+
+
+@app.patch("/api/v1/custom-templates/{template_id}")
+async def update_custom_template(template_id: str, body: TemplateUpdateRequest, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        t = await session.get(CustomTemplate, template_id)
+        if not t or t.tenant_id != tenant_id:
+            return JSONResponse({"detail": "Template not found"}, status_code=404)
+        updates = body.model_dump(exclude_unset=True)
+        if "sections" in updates and updates["sections"] is not None:
+            updates["sections"] = json.dumps(updates["sections"])
+        for k, v in updates.items():
+            setattr(t, k, v)
+        t.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(t)
+        return _template_dict(t)
+
+
+@app.delete("/api/v1/custom-templates/{template_id}")
+async def delete_custom_template(template_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        t = await session.get(CustomTemplate, template_id)
+        if not t or t.tenant_id != tenant_id:
+            return JSONResponse({"detail": "Template not found"}, status_code=404)
+        t.is_active = False
+        t.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+        return {"detail": "Template deactivated"}
+
+
+# ── Claim Assignment ─────────────────────────────────────────────────
+
+TEAM_MEMBERS = [
+    {"id": "dev-user-001", "name": "Demo Biller", "role": "biller"},
+    {"id": "dev-user-002", "name": "Sarah Johnson", "role": "biller"},
+    {"id": "dev-user-003", "name": "Mike Chen", "role": "reviewer"},
+    {"id": "dev-user-004", "name": "Lisa Park", "role": "manager"},
+]
+
+
+class AssignClaimRequest(BaseModel):
+    claim_id: str
+    assigned_to: str
+    note: str | None = None
+
+
+@app.get("/api/v1/team-members")
+async def list_team_members():
+    return TEAM_MEMBERS
+
+
+@app.get("/api/v1/claims/{claim_id}/assignments")
+async def get_claim_assignments(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        q = select(ClaimAssignment).where(
+            ClaimAssignment.tenant_id == tenant_id,
+            ClaimAssignment.claim_id == claim_id,
+        ).order_by(ClaimAssignment.created_at.desc())
+        result = await session.execute(q)
+        assignments = result.scalars().all()
+        return [
+            {
+                "id": a.id,
+                "claim_id": a.claim_id,
+                "assigned_to": a.assigned_to,
+                "assigned_by": a.assigned_by,
+                "note": a.note,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+                "assignee_name": next((m["name"] for m in TEAM_MEMBERS if m["id"] == a.assigned_to), a.assigned_to),
+            }
+            for a in assignments
+        ]
+
+
+@app.post("/api/v1/claims/{claim_id}/assign", status_code=201)
+async def assign_claim(claim_id: str, body: AssignClaimRequest, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with app.state.session_factory() as session:
+        claim = await session.get(Claim, claim_id)
+        if not claim or claim.tenant_id != tenant_id:
+            return JSONResponse({"detail": "Claim not found"}, status_code=404)
+
+        assignment = ClaimAssignment(
+            tenant_id=tenant_id,
+            claim_id=claim_id,
+            assigned_to=body.assigned_to,
+            assigned_by=user_id,
+            note=body.note,
+        )
+        session.add(assignment)
+        await session.commit()
+        await session.refresh(assignment)
+
+        assignee_name = next((m["name"] for m in TEAM_MEMBERS if m["id"] == body.assigned_to), body.assigned_to)
+        return {
+            "id": assignment.id,
+            "claim_id": claim_id,
+            "assigned_to": body.assigned_to,
+            "assignee_name": assignee_name,
+            "assigned_by": user_id,
+            "note": body.note,
+            "created_at": assignment.created_at.isoformat(),
+        }
+
+
+@app.get("/api/v1/assignments")
+async def list_all_assignments(
+    request: Request,
+    assigned_to: str | None = None,
+):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        q = select(ClaimAssignment).where(ClaimAssignment.tenant_id == tenant_id).order_by(ClaimAssignment.created_at.desc())
+        if assigned_to:
+            q = q.where(ClaimAssignment.assigned_to == assigned_to)
+        result = await session.execute(q)
+        assignments = result.scalars().all()
+
+        claim_ids = list({a.claim_id for a in assignments})
+        claims_dict = {}
+        if claim_ids:
+            cq = select(Claim).where(Claim.id.in_(claim_ids))
+            cr = await session.execute(cq)
+            for c in cr.scalars().all():
+                claims_dict[c.id] = _claim_dict(c)
+
+        return [
+            {
+                "id": a.id,
+                "claim_id": a.claim_id,
+                "assigned_to": a.assigned_to,
+                "assignee_name": next((m["name"] for m in TEAM_MEMBERS if m["id"] == a.assigned_to), a.assigned_to),
+                "assigned_by": a.assigned_by,
+                "note": a.note,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+                "claim": claims_dict.get(a.claim_id),
+            }
+            for a in assignments
+        ]
