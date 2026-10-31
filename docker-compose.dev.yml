@@ -1,0 +1,58 @@
+version: "3.9"
+
+services:
+  dev-server:
+    build:
+      context: .
+      dockerfile: services/dev_server/Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      - PYTHONPATH=/app
+    volumes:
+      - dev-data:/app/data
+
+  agents:
+    build:
+      context: .
+      dockerfile: services/agents/Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - RULES_ENGINE_URL=http://rules-engine:8002
+    depends_on:
+      - ollama
+      - rules-engine
+
+  rules-engine:
+    build:
+      context: .
+      dockerfile: services/rules_engine/Dockerfile
+    ports:
+      - "8002:8002"
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - DEV_SERVER_URL=http://dev-server:8003
+      - AGENT_PIPELINE_URL=http://agents:8001
+      - RULES_ENGINE_URL=http://rules-engine:8002
+    depends_on:
+      - dev-server
+      - agents
+
+volumes:
+  dev-data:
+  ollama-data:
