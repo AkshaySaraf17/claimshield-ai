@@ -715,3 +715,138 @@ async def import_edi835(body: EDI835Upload, request: Request):
         "claim_ids": created_ids,
         "payer_name": era.payer_name,
     }
+
+
+# ── Payer Analytics ──────────────────────────────────────────────────────
+
+@app.get("/api/v1/analytics/payers")
+async def payer_analytics(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        q = select(Claim).where(Claim.tenant_id == tenant_id)
+        result = await session.execute(q)
+        claims = result.scalars().all()
+
+    payers: dict[str, dict] = {}
+    for c in claims:
+        name = c.payer_name or "Unknown"
+        if name not in payers:
+            payers[name] = {
+                "payer_name": name,
+                "total_claims": 0,
+                "total_denied_cents": 0,
+                "total_recovered_cents": 0,
+                "denial_codes": {},
+                "by_status": {},
+            }
+        p = payers[name]
+        p["total_claims"] += 1
+        p["total_denied_cents"] += c.amount_denied_cents or 0
+        if c.status == "won":
+            p["total_recovered_cents"] += c.amount_denied_cents or 0
+
+        code = c.denial_code or "unknown"
+        p["denial_codes"][code] = p["denial_codes"].get(code, 0) + 1
+        p["by_status"][c.status] = p["by_status"].get(c.status, 0) + 1
+
+    result_list = sorted(payers.values(), key=lambda x: x["total_denied_cents"], reverse=True)
+    for p in result_list:
+        denied = p["total_denied_cents"]
+        recovered = p["total_recovered_cents"]
+        p["win_rate"] = round(recovered / denied * 100, 1) if denied > 0 else 0.0
+
+    return result_list
+
+
+# ── CSV Export ───────────────────────────────────────────────────────────
+
+@app.get("/api/v1/claims/export")
+async def export_claims_csv(request: Request):
+    from starlette.responses import Response
+
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        q = (
+            select(Claim)
+            .where(Claim.tenant_id == tenant_id)
+            .order_by(Claim.created_at.desc())
+        )
+        result = await session.execute(q)
+        claims = result.scalars().all()
+
+    headers = [
+        "claim_number", "payer_name", "denial_code", "denial_reason",
+        "amount_denied", "status", "filing_deadline", "created_at",
+    ]
+    rows = [",".join(headers)]
+    for c in claims:
+        denied = f"{(c.amount_denied_cents or 0) / 100:.2f}"
+        deadline = c.filing_deadline.strftime("%Y-%m-%d") if c.filing_deadline else ""
+        created = c.created_at.strftime("%Y-%m-%d %H:%M") if c.created_at else ""
+        row = [
+            c.claim_number or "",
+            f'"{c.payer_name}"' if c.payer_name else "",
+            c.denial_code or "",
+            f'"{(c.denial_reason or "").replace(chr(34), chr(39))}"',
+            denied,
+            c.status,
+            deadline,
+            created,
+        ]
+        rows.append(",".join(row))
+
+    csv_content = "\n".join(rows)
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=claims_export.csv"},
+    )
+
+
+# ── Batch Status Transition ─────────────────────────────────────────────
+
+class BatchTransition(BaseModel):
+    claim_ids: list[str]
+    new_status: str
+
+
+@app.post("/api/v1/claims/batch-transition")
+async def batch_transition(body: BatchTransition, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+
+    results = []
+    async with app.state.session_factory() as session:
+        for claim_id in body.claim_ids:
+            q = select(Claim).where(Claim.id == claim_id, Claim.tenant_id == tenant_id)
+            result = await session.execute(q)
+            claim = result.scalar_one_or_none()
+            if not claim:
+                results.append({"id": claim_id, "success": False, "error": "not found"})
+                continue
+
+            allowed = ALLOWED_TRANSITIONS.get(claim.status, set())
+            if body.new_status not in allowed:
+                results.append({
+                    "id": claim_id,
+                    "success": False,
+                    "error": f"cannot transition from {claim.status} to {body.new_status}",
+                })
+                continue
+
+            claim.status = body.new_status
+            claim.updated_at = datetime.now(timezone.utc)
+            if body.new_status in ("approved", "needs_review"):
+                claim.reviewed_by = user_id
+                claim.reviewed_at = datetime.now(timezone.utc)
+
+            await _write_audit(
+                session, tenant_id, user_id,
+                f"claim.status.{body.new_status}", "claim", claim_id,
+                {"new_status": body.new_status},
+            )
+            results.append({"id": claim_id, "success": True, "new_status": body.new_status})
+
+        await session.commit()
+
+    return {"results": results}

@@ -10,6 +10,7 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard/claims", label: "Claims" },
   { href: "/dashboard/appeals", label: "Appeals" },
   { href: "/dashboard/deadlines", label: "Deadlines" },
+  { href: "/dashboard/analytics", label: "Analytics" },
   { href: "/dashboard/import", label: "Import" },
   { href: "/dashboard/audit", label: "Audit Log" },
 ];

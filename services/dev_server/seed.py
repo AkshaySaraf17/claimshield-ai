@@ -22,6 +22,20 @@ def _ago(days: int) -> datetime:
     return datetime.now(timezone.utc) - timedelta(days=days)
 
 
+def _deadline(payer_name: str, created_days_ago: int) -> datetime:
+    PAYER_FILING_DAYS: dict[str, int] = {
+        "aetna": 90, "unitedhealthcare": 90, "bcbs": 120,
+        "blue cross blue shield": 120, "cigna": 90, "humana": 365,
+        "medicare": 120,
+    }
+    days = 90
+    for key, d in PAYER_FILING_DAYS.items():
+        if key in payer_name.lower():
+            days = d
+            break
+    return _ago(created_days_ago) + timedelta(days=days)
+
+
 def _hash(prev: str | None, action: str, resource_type: str, resource_id: str, detail: dict | None) -> str:
     payload = json.dumps(
         {
@@ -52,6 +66,7 @@ SEED_CLAIMS = [
         "amount_denied_cents": 245000,
         "status": "pending_review",
         "created_at": _ago(2),
+        "filing_deadline": _deadline("Aetna", 2),
     },
     {
         "id": str(uuid.uuid4()),
@@ -64,6 +79,7 @@ SEED_CLAIMS = [
         "amount_denied_cents": 1850000,
         "status": "in_progress",
         "created_at": _ago(5),
+        "filing_deadline": _deadline("UnitedHealthcare", 5),
     },
     {
         "id": str(uuid.uuid4()),
@@ -76,6 +92,7 @@ SEED_CLAIMS = [
         "amount_denied_cents": 32500,
         "status": "needs_review",
         "created_at": _ago(8),
+        "filing_deadline": _deadline("Blue Cross Blue Shield", 8),
     },
     {
         "id": str(uuid.uuid4()),
@@ -88,6 +105,7 @@ SEED_CLAIMS = [
         "amount_denied_cents": 425000,
         "status": "pending_review",
         "created_at": _ago(1),
+        "filing_deadline": _deadline("Cigna", 1),
     },
     {
         "id": str(uuid.uuid4()),
@@ -100,6 +118,7 @@ SEED_CLAIMS = [
         "amount_denied_cents": 18500,
         "status": "approved",
         "created_at": _ago(12),
+        "filing_deadline": _deadline("Humana", 12),
     },
     {
         "id": str(uuid.uuid4()),
@@ -112,6 +131,7 @@ SEED_CLAIMS = [
         "amount_denied_cents": 890000,
         "status": "pending_review",
         "created_at": _ago(3),
+        "filing_deadline": _deadline("Aetna", 3),
     },
     {
         "id": str(uuid.uuid4()),
@@ -124,6 +144,7 @@ SEED_CLAIMS = [
         "amount_denied_cents": 67500,
         "status": "sent",
         "created_at": _ago(15),
+        "filing_deadline": _deadline("Medicare", 15),
     },
     {
         "id": str(uuid.uuid4()),
@@ -136,6 +157,7 @@ SEED_CLAIMS = [
         "amount_denied_cents": 1250000,
         "status": "won",
         "created_at": _ago(30),
+        "filing_deadline": _deadline("Blue Cross Blue Shield", 30),
     },
     {
         "id": str(uuid.uuid4()),
@@ -148,6 +170,7 @@ SEED_CLAIMS = [
         "amount_denied_cents": 54000,
         "status": "lost",
         "created_at": _ago(20),
+        "filing_deadline": _deadline("Cigna", 20),
     },
     {
         "id": str(uuid.uuid4()),
@@ -160,6 +183,7 @@ SEED_CLAIMS = [
         "amount_denied_cents": 175000,
         "status": "in_progress",
         "created_at": _ago(7),
+        "filing_deadline": _deadline("UnitedHealthcare", 7),
     },
 ]
 
