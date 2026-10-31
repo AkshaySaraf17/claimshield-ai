@@ -25,6 +25,9 @@ build/
 # Claude Code
 .claude/
 
+# SQLite dev database
+*.db
+
 # Data (keep fixtures, ignore generated)
 data/synthetic/*.json
 data/synthetic/*.csv
