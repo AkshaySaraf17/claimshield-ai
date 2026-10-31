@@ -141,6 +141,12 @@ export default function ClaimsListPage() {
           </h1>
         </div>
         <div className="flex gap-2">
+          <Link
+            href="/dashboard/claims/compare"
+            className="rounded border border-ink-300/50 px-3 py-1.5 text-sm text-ink-600 hover:bg-ink-100"
+          >
+            Compare
+          </Link>
           <a
             href="/api/v1/claims/export"
             download
