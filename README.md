@@ -1,117 +1,60 @@
 # ClaimShield AI
 
-Healthcare denial appeal platform. Paste a denial letter, get a draft appeal backed by payer policy and billing rules. Nothing gets sent without human approval.
+When a health insurance company denies a medical claim, the clinic has to write an appeal letter arguing why the denial was wrong. This takes billers hours per case — researching payer policies, checking filing deadlines, finding the right billing codes, and drafting a letter that addresses the specific reason for denial.
 
-## How it works
+ClaimShield automates the research and drafting. A biller pastes the denial letter and clinical notes into the dashboard, and the system produces a ready-to-review appeal letter in seconds. The biller reviews it, edits if needed, and approves before anything gets sent. The AI drafts — humans decide.
 
-1. **Parser** reads the denial letter and extracts the code, reason, payer, and amount
-2. **Rules engine** checks timely filing deadlines, CCI bundling edits, and payer-specific rules
-3. **Classifier** routes the denial to a specialist (medical necessity, coding, authorization, timely filing, patient responsibility, or general)
-4. **Specialist** analyzes documentation gaps and builds the clinical argument
-5. **Researcher** pulls relevant policy language from a knowledge base
-6. **Writer** drafts the appeal letter with a confidence score
-7. **Human reviewer** approves or edits before anything is sent
+## What it does
 
-The LLM drafts and explains. Deterministic code handles dates, money, billing codes, and bundling. Every dollar amount is stored as integer cents.
+- **Reads denial letters** and extracts the denial code, reason, payer name, and denied amount
+- **Checks billing rules** — timely filing deadlines, CCI bundling edits, modifier requirements, and payer-specific policies
+- **Routes to a specialist** based on the denial type (medical necessity, coding, authorization, timely filing, patient responsibility)
+- **Finds documentation gaps** — missing functional scores, absent auth numbers, insufficient treatment history
+- **Pulls policy language** from a knowledge base to back up the argument
+- **Writes the appeal letter** with a confidence score so the reviewer knows how much to trust it
+- **Blocks sending until a human approves** — server-enforced, not just a UI checkbox
 
-## Run it locally
+## Who it's for
 
-You need: Node.js 18+, Python 3.11+, and [Ollama](https://ollama.com) with `llama3.2:3b` pulled.
+Independent clinics and billing teams that handle their own denial appeals. The typical user is a medical biller who knows denial codes and payer rules but spends too much time on the writing and research part of each appeal.
 
-```bash
-ollama pull llama3.2:3b
-```
+## The dashboard
 
-Then from the project root:
+**Appeal Workbench** — the main tool. Paste a denial letter, see the parsed denial details, rule check results, and a generated appeal draft side by side. Approve or edit before sending.
 
-```bash
-# install python deps
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e packages/py-common
-pip install -r services/agents/requirements.txt 2>/dev/null || pip install fastapi 'uvicorn[standard]' langgraph httpx pydantic pydantic-settings aiosqlite
+**Claims** — a list of all claims in the system with their denial codes, payers, amounts, and current status (pending review, in progress, approved, sent, won, lost).
 
-# install frontend deps
-cd apps/web && npm install && cd ../..
-```
+**Audit Log** — every action is recorded in an append-only, hash-chained log. Each entry links to the previous one cryptographically, so tampering is detectable. There's a one-click chain integrity verification.
 
-Start four services (each in its own terminal, or use `&`):
+## How the AI pipeline works
 
-```bash
-# 1. rules engine
-PYTHONPATH="$PWD" uvicorn services.rules_engine.app.main:app --port 8002
+The system uses six specialized AI agents, each handling a different type of denial:
 
-# 2. agent pipeline
-PYTHONPATH="$PWD" RULES_ENGINE_URL=http://localhost:8002 OLLAMA_MODEL=llama3.2:3b uvicorn services.agents.app.main:app --port 8001
-
-# 3. dev server (claims, appeals, audit — SQLite, no Docker needed)
-PYTHONPATH="$PWD" uvicorn services.dev_server.main:app --port 8003
-
-# 4. frontend
-cd apps/web && npm run dev
-```
-
-Open [localhost:3000/dashboard](http://localhost:3000/dashboard). Click **Dev login**, paste a denial letter, hit Generate.
-
-## Project layout
-
-```
-apps/web/                 Next.js 15 dashboard
-services/
-  agents/                 LangGraph agent pipeline (parser → specialist → writer)
-  rules_engine/           Deterministic billing rules (timely filing, CCI, payer rules)
-  dev_server/             Combined claims/appeals/audit API on SQLite
-  claims/                 Claims service (Postgres, for production)
-  appeals/                Appeals service (Postgres, for production)
-  audit/                  Audit service with hash-chained log (Postgres + Kafka)
-packages/py-common/       Shared Python: models, auth, tenancy, events
-infra/compose/            Docker Compose for Postgres, Kafka, Keycloak, etc.
-```
-
-**Local dev** uses `dev_server` (SQLite, no Docker). **Production** uses the individual services with Postgres, Kafka, and Keycloak behind an API gateway.
-
-## Dashboard pages
-
-- **Appeal Workbench** — paste denial text + clinical notes, run the agent pipeline, review and approve the draft
-- **Claims** — list of all claims with status, denial code, payer, amount, and filters
-- **Audit Log** — hash-chained append-only entries with chain integrity verification
-
-## Agent pipeline
-
-Six specialized agents, routed by denial code:
-
-| Denial codes | Specialist | What it checks |
+| Denial type | Example codes | What the agent does |
 |---|---|---|
-| CO-4, CO-97 | Coding | CCI edits, modifier justification |
-| CO-50 | Medical necessity | Functional scores, objective measures, treatment history |
-| CO-197 | Authorization | Auth numbers, precert, emergency exceptions |
-| CO-29 | Timely filing | Filing deadlines by payer, proof of submission |
-| PR-1, PR-2, PR-3 | Patient responsibility | Preventive care, OOP max, COB |
-| Everything else | Coordinator | General analysis and documentation review |
+| Coding errors | CO-4, CO-97 | Checks CCI edits and modifier justification |
+| Medical necessity | CO-50 | Looks for functional scores, objective measures, treatment history |
+| Authorization | CO-197 | Finds auth numbers, checks for emergency exceptions |
+| Timely filing | CO-29 | Calculates deadlines by payer, finds proof of submission |
+| Patient responsibility | PR-1, PR-2, PR-3 | Checks preventive care rules, out-of-pocket max, coordination of benefits |
+| General | Everything else | Broad documentation review |
 
-## Production stack
+The AI only drafts and explains. All date calculations, dollar amounts (stored as integer cents to avoid rounding errors), billing code lookups, and bundling decisions are handled by deterministic code — not the LLM.
 
-When you're ready to move past local dev:
+## Tech stack
 
-```bash
-cd infra/compose && docker compose -f dev.yml up -d
-```
+- **Frontend**: Next.js 15 with a clean dashboard UI
+- **Agent pipeline**: Python + LangGraph with a supervisor routing graph
+- **Rules engine**: Deterministic billing rules service
+- **LLM**: Runs locally via Ollama (llama3.2) — no API keys needed for dev
+- **Database**: SQLite for local dev, Postgres with pgvector for production
+- **Auth**: Keycloak OIDC with 7 roles (patient, biller, coder, physician reviewer, clinic admin, auditor, platform admin)
+- **Infrastructure**: Kafka for events, Debezium for CDC, APISIX gateway, row-level security
 
-This starts Postgres (pgvector), Kafka (KRaft), Keycloak (OIDC with 7 roles), Valkey, Traefik, APISIX, and Debezium. The individual claim/appeal/audit services connect to Postgres with row-level security and publish events through a transactional outbox.
+## Getting started
 
-## Before real patient data
+See [SETUP.md](SETUP.md) for installation and running instructions.
 
-This runs on synthetic data only. Before processing real denial letters:
+## Current status
 
-- Sign a HIPAA BAA with your hosting and LLM providers
-- Enable Keycloak auth (the realm config is already in `infra/keycloak/`)
-- Switch from SQLite dev server to the Postgres-backed services
-- Review the rate limiting and security hardening in `claimshield_common.security`
-
-## Tests
-
-```bash
-cd /path/to/claimshield-ai
-PYTHONPATH="$PWD" python -m pytest tests/ -v
-```
-
-103 tests covering money types, tenancy, auth, rules engine, agent routing, EDI 835 parsing, observability, and security.
+This is running on synthetic data. See [SETUP.md](SETUP.md) for what's needed before processing real patient data.
