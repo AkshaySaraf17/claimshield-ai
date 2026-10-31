@@ -148,7 +148,7 @@ export default function ClaimsListPage() {
             Compare
           </Link>
           <a
-            href="/api/v1/claims/export"
+            href="/api/v1/claims/export/csv"
             download
             className="rounded border border-ink-300/50 px-3 py-1.5 text-sm text-ink-600 hover:bg-ink-100"
           >

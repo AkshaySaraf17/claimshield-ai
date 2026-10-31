@@ -2702,3 +2702,169 @@ async def summary_text_report(request: Request, period_days: int = Query(default
     return {"text": "\n".join(lines), "period_days": period_days}
 
 
+# ── Claim Aging Report ─────────────────────────────────────────────────
+
+
+@app.get("/api/v1/analytics/aging")
+async def claim_aging(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        result = await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id)
+        )
+        claims = result.scalars().all()
+
+    now = datetime.now(timezone.utc)
+    buckets = {"0-7d": 0, "8-14d": 0, "15-30d": 0, "31-60d": 0, "61-90d": 0, "90d+": 0}
+    bucket_cents = {"0-7d": 0, "8-14d": 0, "15-30d": 0, "31-60d": 0, "61-90d": 0, "90d+": 0}
+    by_status: dict[str, dict[str, int]] = {}
+
+    terminal = {"won", "lost", "cancelled"}
+    for c in claims:
+        if c.status in terminal:
+            continue
+        age = (now - c.created_at.replace(tzinfo=timezone.utc)).days
+        if age <= 7:
+            b = "0-7d"
+        elif age <= 14:
+            b = "8-14d"
+        elif age <= 30:
+            b = "15-30d"
+        elif age <= 60:
+            b = "31-60d"
+        elif age <= 90:
+            b = "61-90d"
+        else:
+            b = "90d+"
+        buckets[b] += 1
+        bucket_cents[b] += c.amount_denied_cents or 0
+        if c.status not in by_status:
+            by_status[c.status] = {"0-7d": 0, "8-14d": 0, "15-30d": 0, "31-60d": 0, "61-90d": 0, "90d+": 0}
+        by_status[c.status][b] += 1
+
+    return {
+        "buckets": [
+            {"range": k, "count": buckets[k], "amount_cents": bucket_cents[k]}
+            for k in buckets
+        ],
+        "by_status": {
+            status: [{"range": k, "count": v} for k, v in ranges.items()]
+            for status, ranges in by_status.items()
+        },
+        "total_open": sum(buckets.values()),
+    }
+
+
+# ── SLA Compliance ─────────────────────────────────────────────────────
+
+
+@app.get("/api/v1/analytics/sla")
+async def sla_compliance(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        result = await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id)
+        )
+        claims = result.scalars().all()
+        audit_result = await session.execute(
+            select(AuditLog).where(AuditLog.tenant_id == tenant_id).order_by(AuditLog.created_at)
+        )
+        audits = audit_result.scalars().all()
+
+    sla_targets = {
+        "initial_review": 2,
+        "appeal_draft": 5,
+        "appeal_approval": 3,
+        "total_cycle": 14,
+    }
+
+    now = datetime.now(timezone.utc)
+    metrics: list[dict] = []
+
+    for c in claims:
+        created = c.created_at.replace(tzinfo=timezone.utc)
+        claim_audits = [a for a in audits if a.resource_id == c.id]
+
+        first_review = None
+        for a in claim_audits:
+            detail_str = ""
+            if a.detail:
+                import json as _json
+                try:
+                    detail_str = _json.dumps(a.detail) if isinstance(a.detail, dict) else str(a.detail)
+                except Exception:
+                    detail_str = str(a.detail)
+            if a.action == "status_change" and "in_progress" in detail_str:
+                first_review = a.created_at.replace(tzinfo=timezone.utc)
+                break
+
+        days_to_review = (first_review - created).days if first_review else (now - created).days
+        review_met = days_to_review <= sla_targets["initial_review"] if first_review else False
+
+        cycle_days = (now - created).days
+        cycle_complete = c.status in ("won", "lost", "cancelled", "sent")
+        cycle_met = cycle_days <= sla_targets["total_cycle"] if cycle_complete else None
+
+        metrics.append({
+            "claim_id": c.id,
+            "claim_number": c.claim_number,
+            "payer": c.payer_name,
+            "status": c.status,
+            "age_days": cycle_days,
+            "initial_review_days": days_to_review,
+            "initial_review_met": review_met,
+            "cycle_met": cycle_met,
+        })
+
+    met_review = sum(1 for m in metrics if m["initial_review_met"])
+    total_with_review = sum(1 for m in metrics if m["initial_review_met"] is not None)
+    completed = [m for m in metrics if m["cycle_met"] is not None]
+    met_cycle = sum(1 for m in completed if m["cycle_met"])
+
+    return {
+        "targets": sla_targets,
+        "summary": {
+            "total_claims": len(metrics),
+            "initial_review_compliance": round(met_review / total_with_review * 100) if total_with_review else 0,
+            "cycle_compliance": round(met_cycle / len(completed) * 100) if completed else 0,
+            "avg_age_days": round(sum(m["age_days"] for m in metrics) / len(metrics)) if metrics else 0,
+        },
+        "claims": sorted(metrics, key=lambda x: -x["age_days"]),
+    }
+
+
+# ── CSV Export ─────────────────────────────────────────────────────────
+
+
+@app.get("/api/v1/claims/export/csv")
+async def export_claims_csv(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        result = await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id).order_by(Claim.created_at.desc())
+        )
+        claims = result.scalars().all()
+
+    import csv
+    import io
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "claim_number", "payer_name", "denial_code", "denial_reason",
+        "amount_denied_cents", "status", "reviewed_by", "created_at", "updated_at",
+    ])
+    for c in claims:
+        writer.writerow([
+            c.claim_number, c.payer_name, c.denial_code, c.denial_reason,
+            c.amount_denied_cents, c.status, c.reviewed_by,
+            c.created_at.isoformat() if c.created_at else "",
+            c.updated_at.isoformat() if c.updated_at else "",
+        ])
+
+    from starlette.responses import Response
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=claims_export.csv"},
+    )
