@@ -237,7 +237,7 @@ export default function DashboardOverview() {
       </div>
 
       {/* Quick actions */}
-      <div className="mt-8 grid gap-4 sm:grid-cols-3">
+      <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Link
           href="/dashboard/workbench"
           className="rounded-sm border border-ink-300/40 bg-white px-5 py-4 transition-colors hover:bg-parchment/50"
@@ -246,29 +246,40 @@ export default function DashboardOverview() {
             Appeal Workbench
           </h3>
           <p className="mt-1 text-xs text-ink-500">
-            Paste a denial letter and generate an appeal draft.
+            Paste a denial letter and generate an appeal.
           </p>
         </Link>
         <Link
-          href="/dashboard/appeals"
+          href="/dashboard/review"
           className="rounded-sm border border-ink-300/40 bg-white px-5 py-4 transition-colors hover:bg-parchment/50"
         >
           <h3 className="font-display text-sm font-semibold text-ink-950">
-            Review Appeals
+            Review Queue
           </h3>
           <p className="mt-1 text-xs text-ink-500">
-            {stats.appeals_pending_review} appeals waiting for review and approval.
+            {stats.appeals_pending_review} appeals waiting for approval.
           </p>
         </Link>
         <Link
-          href="/dashboard/claims"
+          href="/dashboard/claims/new"
           className="rounded-sm border border-ink-300/40 bg-white px-5 py-4 transition-colors hover:bg-parchment/50"
         >
           <h3 className="font-display text-sm font-semibold text-ink-950">
-            Claims List
+            New Claim
           </h3>
           <p className="mt-1 text-xs text-ink-500">
-            Browse and manage all {stats.claims_total} claims.
+            Create one or more claims manually.
+          </p>
+        </Link>
+        <Link
+          href="/dashboard/reports"
+          className="rounded-sm border border-ink-300/40 bg-white px-5 py-4 transition-colors hover:bg-parchment/50"
+        >
+          <h3 className="font-display text-sm font-semibold text-ink-950">
+            Reports
+          </h3>
+          <p className="mt-1 text-xs text-ink-500">
+            Summary reports with payer and denial analytics.
           </p>
         </Link>
       </div>
