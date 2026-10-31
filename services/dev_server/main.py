@@ -276,6 +276,38 @@ async def search_claims(
         return {"claims": claims, "total": total}
 
 
+@app.get("/api/v1/claims/duplicates")
+async def detect_duplicates(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        q = select(Claim).where(Claim.tenant_id == tenant_id).order_by(Claim.created_at.desc())
+        result = await session.execute(q)
+        claims = result.scalars().all()
+
+    groups: dict[str, list[dict]] = {}
+    for c in claims:
+        key = f"{(c.payer_name or '').lower().strip()}|{(c.denial_code or '').strip()}|{c.amount_denied_cents or 0}"
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(_claim_dict(c))
+
+    duplicates = []
+    for key, group_claims in groups.items():
+        if len(group_claims) < 2:
+            continue
+        payer, code, amount = key.split("|")
+        duplicates.append({
+            "payer_name": payer,
+            "denial_code": code,
+            "amount_denied_cents": int(amount),
+            "count": len(group_claims),
+            "claims": group_claims,
+        })
+
+    duplicates.sort(key=lambda d: d["count"], reverse=True)
+    return {"groups": duplicates, "total_groups": len(duplicates)}
+
+
 @app.get("/api/v1/claims/export")
 async def export_claims_csv(request: Request):
     from starlette.responses import Response
@@ -2219,3 +2251,64 @@ async def list_all_assignments(
             }
             for a in assignments
         ]
+
+
+# ── User Activity Analytics ──────────────────────────────────────────
+
+@app.get("/api/v1/analytics/user-activity")
+async def user_activity(request: Request, days: int = Query(default=30, le=365)):
+    tenant_id = _get_tenant_id(request)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    async with app.state.session_factory() as session:
+        q = select(AuditLog).where(
+            AuditLog.tenant_id == tenant_id,
+            AuditLog.created_at >= cutoff,
+        ).order_by(AuditLog.created_at.desc())
+        result = await session.execute(q)
+        entries = result.scalars().all()
+
+    by_user: dict[str, dict] = {}
+    by_action: dict[str, int] = {}
+    daily: dict[str, int] = {}
+
+    for e in entries:
+        uid = e.actor_id
+        if uid not in by_user:
+            by_user[uid] = {"user_id": uid, "role": e.actor_role, "actions": 0, "last_action": None}
+        by_user[uid]["actions"] += 1
+        if by_user[uid]["last_action"] is None:
+            by_user[uid]["last_action"] = e.created_at.isoformat()
+
+        by_action[e.action] = by_action.get(e.action, 0) + 1
+
+        day_key = e.created_at.strftime("%Y-%m-%d")
+        daily[day_key] = daily.get(day_key, 0) + 1
+
+    users_sorted = sorted(by_user.values(), key=lambda u: u["actions"], reverse=True)
+    actions_sorted = sorted(by_action.items(), key=lambda x: x[1], reverse=True)
+    daily_sorted = sorted(daily.items())
+
+    recent = [
+        {
+            "id": e.id,
+            "actor_id": e.actor_id,
+            "action": e.action,
+            "resource_type": e.resource_type,
+            "resource_id": e.resource_id,
+            "detail": e.detail,
+            "created_at": e.created_at.isoformat(),
+        }
+        for e in entries[:50]
+    ]
+
+    return {
+        "period_days": days,
+        "total_actions": len(entries),
+        "users": users_sorted,
+        "actions": [{"action": a, "count": c} for a, c in actions_sorted],
+        "daily": [{"date": d, "count": c} for d, c in daily_sorted],
+        "recent": recent,
+    }
+
+
