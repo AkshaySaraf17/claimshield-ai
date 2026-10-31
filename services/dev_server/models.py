@@ -171,6 +171,18 @@ class PayerResponse(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
 
 
+class ClaimLink(Base):
+    __tablename__ = "claim_links"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    claim_id_a: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    claim_id_b: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    link_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
+
+
 class ClaimWatchlist(Base):
     __tablename__ = "claim_watchlist"
 

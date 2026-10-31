@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, Tenant, Clinic, Claim, Appeal, ClaimNote, ClaimAttachment, UserPreference, AuditLog, CustomTemplate, ClaimAssignment, ClaimTag, PayerResponse, ClaimComment, RoutingRule, ClaimWatchlist, PayerContact, ClaimCost
+from .models import Base, Tenant, Clinic, Claim, Appeal, ClaimNote, ClaimAttachment, UserPreference, AuditLog, CustomTemplate, ClaimAssignment, ClaimTag, PayerResponse, ClaimComment, RoutingRule, ClaimWatchlist, PayerContact, ClaimCost, ClaimLink
 from .seed import DEV_TENANT_ID, DEV_CLINIC_ID, DEV_USER_ID, build_seed_objects
 
 import sys
@@ -4339,3 +4339,247 @@ async def cost_summary(request: Request):
         "by_category": [{"category": k, "total_cents": v} for k, v in sorted(by_category.items(), key=lambda x: -x[1])],
         "claims_with_costs": len(by_claim),
     }
+
+
+# ---------------------------------------------------------------------------
+# Claim Snapshot / Print View
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/claims/{claim_id}/snapshot")
+async def claim_snapshot(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        claim = (await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id, Claim.id == claim_id)
+        )).scalar_one_or_none()
+        if not claim:
+            return JSONResponse({"detail": "not found"}, status_code=404)
+
+        notes = (await session.execute(
+            select(ClaimNote).where(ClaimNote.tenant_id == tenant_id, ClaimNote.claim_id == claim_id)
+            .order_by(ClaimNote.created_at.asc())
+        )).scalars().all()
+
+        appeals = (await session.execute(
+            select(Appeal).where(Appeal.tenant_id == tenant_id, Appeal.claim_id == claim_id)
+            .order_by(Appeal.version.asc())
+        )).scalars().all()
+
+        tags = (await session.execute(
+            select(ClaimTag).where(ClaimTag.tenant_id == tenant_id, ClaimTag.claim_id == claim_id)
+        )).scalars().all()
+
+        costs = (await session.execute(
+            select(ClaimCost).where(ClaimCost.tenant_id == tenant_id, ClaimCost.claim_id == claim_id)
+        )).scalars().all()
+
+        return {
+            "claim": {
+                "id": claim.id,
+                "claim_number": claim.claim_number,
+                "payer_name": claim.payer_name,
+                "denial_code": claim.denial_code,
+                "denial_reason": claim.denial_reason,
+                "status": claim.status,
+                "amount_denied_cents": claim.amount_denied_cents,
+                "amount_approved_cents": claim.amount_approved_cents,
+                "filing_deadline": claim.filing_deadline.isoformat() if claim.filing_deadline else None,
+                "created_at": claim.created_at.isoformat(),
+            },
+            "notes": [{"author": TEAM_MEMBERS.get(n.author_id, n.author_id), "content": n.content,
+                        "created_at": n.created_at.isoformat()} for n in notes],
+            "appeals": [{"version": a.version, "confidence": a.confidence, "needs_review": a.needs_review,
+                         "approved_by": a.approved_by, "created_at": a.created_at.isoformat()} for a in appeals],
+            "tags": [t.tag for t in tags],
+            "total_cost_cents": sum(c.amount_cents for c in costs),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Denial Prevention Tips
+# ---------------------------------------------------------------------------
+
+PREVENTION_TIPS: dict[str, list[str]] = {
+    "CO-16": [
+        "Verify patient eligibility before scheduling services",
+        "Confirm insurance coverage and policy status at check-in",
+        "Document all eligibility verification attempts",
+    ],
+    "CO-4": [
+        "Use modifier codes correctly per payer guidelines",
+        "Review bundling rules before submitting procedure codes",
+        "Check NCCI edits for code pair conflicts",
+    ],
+    "CO-97": [
+        "Check benefit period limits before authorizing treatment",
+        "Track patient utilization against plan maximums",
+        "Request pre-authorization for services near plan limits",
+    ],
+    "CO-29": [
+        "Verify timely filing deadlines per payer contract",
+        "Implement automated filing deadline alerts",
+        "Submit claims within 48 hours of service date",
+    ],
+    "PR-1": [
+        "Collect patient copay/coinsurance at time of service",
+        "Verify patient financial responsibility before treatment",
+        "Provide upfront cost estimates using payer fee schedules",
+    ],
+    "CO-197": [
+        "Obtain prior authorization before rendering services",
+        "Track authorization expiration dates",
+        "Verify authorization covers the specific CPT codes billed",
+    ],
+}
+
+DEFAULT_TIPS = [
+    "Review denial patterns monthly to identify systemic issues",
+    "Train staff on top denial reasons and prevention strategies",
+    "Implement pre-claim scrubbing to catch errors before submission",
+]
+
+
+@app.get("/api/v1/denial-prevention-tips")
+async def denial_prevention_tips(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        claims = (await session.execute(
+            select(Claim.denial_code, func.count(Claim.id).label("cnt"))
+            .where(Claim.tenant_id == tenant_id)
+            .group_by(Claim.denial_code)
+            .order_by(func.count(Claim.id).desc())
+        )).all()
+
+    result = []
+    for code, count in claims:
+        if not code:
+            continue
+        tips = PREVENTION_TIPS.get(code, DEFAULT_TIPS)
+        result.append({
+            "denial_code": code,
+            "occurrence_count": count,
+            "tips": tips,
+            "source": "CMS/AMA guidelines" if code in PREVENTION_TIPS else "general best practice",
+        })
+    return result
+
+
+# ---------------------------------------------------------------------------
+# User Activity Log (personal)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/my-activity")
+async def my_activity(request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    limit = int(request.query_params.get("limit", "50"))
+    async with request.app.state.session_factory() as session:
+        rows = (await session.execute(
+            select(AuditLog)
+            .where(AuditLog.tenant_id == tenant_id, AuditLog.actor_id == user_id)
+            .order_by(AuditLog.created_at.desc())
+            .limit(min(limit, 200))
+        )).scalars().all()
+        return [
+            {
+                "id": a.id,
+                "action": a.action,
+                "resource_type": a.resource_type,
+                "resource_id": a.resource_id,
+                "created_at": a.created_at.isoformat(),
+            }
+            for a in rows
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Claim Links / Dependencies
+# ---------------------------------------------------------------------------
+
+LINK_TYPES = ["related", "duplicate", "parent", "child", "follow_up", "rebill"]
+
+
+@app.get("/api/v1/claims/{claim_id}/links")
+async def list_claim_links(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        rows = (await session.execute(
+            select(ClaimLink).where(
+                ClaimLink.tenant_id == tenant_id,
+                (ClaimLink.claim_id_a == claim_id) | (ClaimLink.claim_id_b == claim_id),
+            )
+        )).scalars().all()
+
+        linked_ids = set()
+        for r in rows:
+            linked_ids.add(r.claim_id_a)
+            linked_ids.add(r.claim_id_b)
+        linked_ids.discard(claim_id)
+
+        claims_map: dict[str, Claim] = {}
+        if linked_ids:
+            linked_claims = (await session.execute(
+                select(Claim).where(Claim.tenant_id == tenant_id, Claim.id.in_(linked_ids))
+            )).scalars().all()
+            claims_map = {c.id: c for c in linked_claims}
+
+        result = []
+        for r in rows:
+            other_id = r.claim_id_b if r.claim_id_a == claim_id else r.claim_id_a
+            other = claims_map.get(other_id)
+            result.append({
+                "link_id": r.id,
+                "link_type": r.link_type,
+                "other_claim_id": other_id,
+                "other_claim_number": other.claim_number if other else None,
+                "other_status": other.status if other else None,
+                "other_payer": other.payer_name if other else None,
+                "created_by": r.created_by,
+                "created_at": r.created_at.isoformat(),
+            })
+        return result
+
+
+@app.post("/api/v1/claims/{claim_id}/links", status_code=201)
+async def create_claim_link(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    body = await request.json()
+    other_id = body.get("other_claim_id", "")
+    link_type = body.get("link_type", "related")
+    if not other_id:
+        return JSONResponse({"detail": "other_claim_id required"}, status_code=400)
+    if link_type not in LINK_TYPES:
+        return JSONResponse({"detail": f"link_type must be one of {LINK_TYPES}"}, status_code=400)
+
+    async with request.app.state.session_factory() as session:
+        link = ClaimLink(
+            id=str(uuid.uuid4()),
+            tenant_id=tenant_id,
+            claim_id_a=claim_id,
+            claim_id_b=other_id,
+            link_type=link_type,
+            created_by=user_id,
+        )
+        session.add(link)
+        await session.commit()
+        await _write_audit(session, tenant_id, user_id, "claim_link.create", "claim", claim_id,
+                           {"other_claim_id": other_id, "link_type": link_type})
+        return {"id": link.id, "link_type": link_type, "claim_id_a": claim_id, "claim_id_b": other_id}
+
+
+@app.delete("/api/v1/claim-links/{link_id}")
+async def delete_claim_link(link_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with request.app.state.session_factory() as session:
+        link = (await session.execute(
+            select(ClaimLink).where(ClaimLink.tenant_id == tenant_id, ClaimLink.id == link_id)
+        )).scalar_one_or_none()
+        if not link:
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        await session.delete(link)
+        await session.commit()
+        await _write_audit(session, tenant_id, user_id, "claim_link.delete", "claim_link", link_id, {})
+        return {"deleted": True}
