@@ -146,7 +146,7 @@ export default function AppealWorkbench() {
     setApproved(false);
 
     try {
-      const res = await fetch("/api/appeal", {
+      const res = await fetch("/api/backend/appeal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

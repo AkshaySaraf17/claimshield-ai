@@ -1,9 +1,44 @@
+# Dependencies
 node_modules/
 .next/
 venv/
+.venv/
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Environment
 .env
 .env.local
+.env.*.local
+
+# IDE / OS
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code
 .claude/
+
+# Data (keep fixtures, ignore generated)
+data/synthetic/*.json
+data/synthetic/*.csv
+data/synthetic/*.pdf
+!data/synthetic/.gitkeep
+
+# Docker volumes
+infra/compose/volumes/
+
+# Coverage / test artifacts
+.coverage
+htmlcov/
+.pytest_cache/
+coverage/
+
+# Build
+*.tgz
