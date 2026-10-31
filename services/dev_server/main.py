@@ -2868,3 +2868,151 @@ async def export_claims_csv(request: Request):
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=claims_export.csv"},
     )
+
+
+# ── Financial Reconciliation ──────────────────────────────────────────
+
+
+@app.get("/api/v1/analytics/financials")
+async def financial_reconciliation(request: Request, period_days: int = Query(default=90)):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        result = await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id)
+        )
+        claims = result.scalars().all()
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=period_days)
+
+    all_claims = claims
+    period_claims = [c for c in claims if c.created_at.replace(tzinfo=timezone.utc) >= cutoff]
+
+    total_denied = sum(c.amount_denied_cents or 0 for c in all_claims)
+    total_recovered = sum(c.amount_denied_cents or 0 for c in all_claims if c.status == "won")
+    total_lost = sum(c.amount_denied_cents or 0 for c in all_claims if c.status == "lost")
+    total_pending = sum(c.amount_denied_cents or 0 for c in all_claims if c.status not in ("won", "lost", "cancelled"))
+    total_cancelled = sum(c.amount_denied_cents or 0 for c in all_claims if c.status == "cancelled")
+
+    period_denied = sum(c.amount_denied_cents or 0 for c in period_claims)
+    period_recovered = sum(c.amount_denied_cents or 0 for c in period_claims if c.status == "won")
+
+    by_payer: dict[str, dict[str, int]] = {}
+    for c in all_claims:
+        p = c.payer_name or "Unknown"
+        if p not in by_payer:
+            by_payer[p] = {"denied": 0, "recovered": 0, "lost": 0, "pending": 0}
+        by_payer[p]["denied"] += c.amount_denied_cents or 0
+        if c.status == "won":
+            by_payer[p]["recovered"] += c.amount_denied_cents or 0
+        elif c.status == "lost":
+            by_payer[p]["lost"] += c.amount_denied_cents or 0
+        elif c.status not in ("cancelled",):
+            by_payer[p]["pending"] += c.amount_denied_cents or 0
+
+    monthly: dict[str, dict[str, int]] = {}
+    for c in all_claims:
+        month = c.created_at.strftime("%Y-%m")
+        if month not in monthly:
+            monthly[month] = {"denied": 0, "recovered": 0, "claims": 0}
+        monthly[month]["denied"] += c.amount_denied_cents or 0
+        if c.status == "won":
+            monthly[month]["recovered"] += c.amount_denied_cents or 0
+        monthly[month]["claims"] += 1
+
+    return {
+        "totals": {
+            "denied_cents": total_denied,
+            "recovered_cents": total_recovered,
+            "lost_cents": total_lost,
+            "pending_cents": total_pending,
+            "cancelled_cents": total_cancelled,
+            "net_recovery_rate": round(total_recovered / total_denied * 100) if total_denied else 0,
+        },
+        "period": {
+            "days": period_days,
+            "denied_cents": period_denied,
+            "recovered_cents": period_recovered,
+        },
+        "by_payer": [
+            {"payer": p, **v} for p, v in sorted(by_payer.items(), key=lambda x: -x[1]["denied"])
+        ],
+        "monthly_trend": [
+            {"month": m, **v} for m, v in sorted(monthly.items())
+        ],
+    }
+
+
+# ── Appeal Success Predictor (deterministic) ──────────────────────────
+
+
+HISTORICAL_WIN_RATES: dict[str, float] = {
+    "CO-4": 0.35, "CO-16": 0.55, "CO-18": 0.20, "CO-29": 0.40,
+    "CO-45": 0.30, "CO-50": 0.65, "CO-97": 0.45, "CO-109": 0.25,
+    "CO-197": 0.60, "CO-204": 0.30, "CO-236": 0.40,
+    "PR-1": 0.15, "PR-2": 0.20, "PR-3": 0.10,
+}
+
+PAYER_MODIFIER: dict[str, float] = {
+    "Aetna": 0.05, "BCBS": 0.0, "Blue Cross Blue Shield": 0.0,
+    "Cigna": -0.05, "UnitedHealthcare": -0.10,
+    "Medicare": 0.10, "Medicaid": 0.05, "Humana": 0.0,
+}
+
+
+@app.get("/api/v1/claims/{claim_id}/predict")
+async def predict_appeal_success(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        result = await session.execute(
+            select(Claim).where(Claim.id == claim_id, Claim.tenant_id == tenant_id)
+        )
+        claim = result.scalar_one_or_none()
+        if not claim:
+            raise HTTPException(404, "Claim not found")
+
+    code = claim.denial_code or ""
+    payer = claim.payer_name or ""
+    amount = claim.amount_denied_cents or 0
+
+    base_rate = HISTORICAL_WIN_RATES.get(code, 0.30)
+    payer_adj = PAYER_MODIFIER.get(payer, 0.0)
+
+    amount_adj = 0.0
+    if amount < 50000:
+        amount_adj = 0.05
+    elif amount > 500000:
+        amount_adj = -0.10
+    elif amount > 200000:
+        amount_adj = -0.05
+
+    has_clinical = bool(claim.raw_clinical_notes and len(claim.raw_clinical_notes) > 50)
+    doc_adj = 0.10 if has_clinical else -0.15
+
+    raw_score = base_rate + payer_adj + amount_adj + doc_adj
+    score = max(0.05, min(0.95, raw_score))
+
+    factors = []
+    factors.append({"factor": "Denial code history", "code": code, "impact": f"{base_rate:.0%} base win rate", "direction": "neutral"})
+    if payer_adj > 0:
+        factors.append({"factor": "Payer favorability", "payer": payer, "impact": f"+{payer_adj:.0%}", "direction": "positive"})
+    elif payer_adj < 0:
+        factors.append({"factor": "Payer favorability", "payer": payer, "impact": f"{payer_adj:.0%}", "direction": "negative"})
+    if amount_adj != 0:
+        factors.append({"factor": "Claim amount", "impact": f"{amount_adj:+.0%}", "direction": "positive" if amount_adj > 0 else "negative"})
+    factors.append({"factor": "Clinical documentation", "impact": f"{doc_adj:+.0%}", "direction": "positive" if doc_adj > 0 else "negative"})
+
+    risk = "low" if score >= 0.6 else "medium" if score >= 0.35 else "high"
+
+    return {
+        "claim_id": claim_id,
+        "predicted_win_probability": round(score, 2),
+        "risk_level": risk,
+        "factors": factors,
+        "recommendation": (
+            "Strong case — proceed with appeal" if score >= 0.6
+            else "Moderate case — consider strengthening documentation before appeal" if score >= 0.35
+            else "Weak case — review denial reason carefully before investing appeal resources"
+        ),
+        "source": "Deterministic model based on historical win rates by denial code, payer, amount, and documentation quality",
+    }

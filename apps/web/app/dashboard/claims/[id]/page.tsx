@@ -93,6 +93,12 @@ export default function ClaimDetailPage() {
   const [assignments, setAssignments] = useState<{ id: string; assigned_to: string; assignee_name: string; note: string | null; created_at: string }[]>([]);
   const [assignTo, setAssignTo] = useState("");
   const [assigning, setAssigning] = useState(false);
+  const [prediction, setPrediction] = useState<{
+    predicted_win_probability: number;
+    risk_level: string;
+    factors: { factor: string; impact: string; direction: string }[];
+    recommendation: string;
+  } | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -113,6 +119,8 @@ export default function ClaimDetailPage() {
       if (attachRes.ok) setAttachments(await attachRes.json());
       const timelineRes = await fetch(`/api/v1/claims/${claimId}/timeline`);
       if (timelineRes.ok) setTimeline(await timelineRes.json());
+      const predictRes = await fetch(`/api/v1/claims/${claimId}/predict`);
+      if (predictRes.ok) setPrediction(await predictRes.json());
       const [teamRes, assignRes] = await Promise.all([
         fetch("/api/v1/team-members"),
         fetch(`/api/v1/assignments?claim_id=${claimId}`),
@@ -390,6 +398,48 @@ export default function ClaimDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Appeal Success Prediction */}
+      {prediction && (
+        <div className="mt-6 rounded border border-ink-300/40 bg-white p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-500">
+              Appeal Success Prediction
+            </h2>
+            <div className="flex items-center gap-2">
+              <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                prediction.risk_level === "low" ? "bg-emerald-100 text-emerald-700" :
+                prediction.risk_level === "medium" ? "bg-amber-100 text-amber-700" :
+                "bg-red-100 text-red-700"
+              }`}>
+                {prediction.risk_level} risk
+              </span>
+              <span className={`text-2xl font-semibold ${
+                prediction.predicted_win_probability >= 0.6 ? "text-emerald-600" :
+                prediction.predicted_win_probability >= 0.35 ? "text-amber-600" :
+                "text-red-600"
+              }`}>
+                {Math.round(prediction.predicted_win_probability * 100)}%
+              </span>
+            </div>
+          </div>
+          <p className="text-sm text-ink-600 mb-3">{prediction.recommendation}</p>
+          <div className="flex flex-wrap gap-2">
+            {prediction.factors.map((f, i) => (
+              <span
+                key={i}
+                className={`rounded border px-2 py-1 text-[10px] ${
+                  f.direction === "positive" ? "border-green-200 bg-green-50 text-green-700" :
+                  f.direction === "negative" ? "border-red-200 bg-red-50 text-red-700" :
+                  "border-ink-200 bg-ink-50 text-ink-600"
+                }`}
+              >
+                {f.factor}: {f.impact}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Appeals */}
       <div className="mt-8">
