@@ -4989,3 +4989,138 @@ async def workload_summary(request: Request):
 
     result = sorted(by_user.values(), key=lambda x: x["active"], reverse=True)
     return result
+
+
+# ── Appeal Version Comparison ───────────────────────────────────────────
+
+@app.get("/api/v1/claims/{claim_id}/appeal-versions")
+async def appeal_versions(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        appeals = (await session.execute(
+            select(Appeal).where(
+                Appeal.claim_id == claim_id,
+                Appeal.tenant_id == tenant_id,
+            ).order_by(Appeal.version)
+        )).scalars().all()
+
+    return [
+        {
+            "id": a.id,
+            "version": a.version,
+            "letter_text": a.letter_text,
+            "policy_evidence": a.policy_evidence,
+            "confidence": a.confidence,
+            "needs_review": a.needs_review,
+            "approved_by": TEAM_MEMBERS.get(a.approved_by or "", a.approved_by) if a.approved_by else None,
+            "approved_at": a.approved_at.isoformat() if a.approved_at else None,
+            "created_at": a.created_at.isoformat(),
+        }
+        for a in appeals
+    ]
+
+
+# ── Payer Intelligence ──────────────────────────────────────────────────
+
+@app.get("/api/v1/analytics/payer-intelligence")
+async def payer_intelligence(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        claims = (await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id)
+        )).scalars().all()
+
+        responses = (await session.execute(
+            select(PayerResponse).where(PayerResponse.tenant_id == tenant_id)
+        )).scalars().all()
+
+        contacts = (await session.execute(
+            select(PayerContact).where(PayerContact.tenant_id == tenant_id)
+        )).scalars().all()
+
+    response_map: dict[str, list] = {}
+    for r in responses:
+        response_map.setdefault(r.claim_id, []).append(r)
+
+    contacts_by_payer: dict[str, list] = {}
+    for c in contacts:
+        contacts_by_payer.setdefault(c.payer_name, []).append({
+            "name": c.contact_name,
+            "phone": c.phone,
+            "email": c.email,
+            "department": c.department,
+        })
+
+    by_payer: dict[str, dict] = {}
+    for c in claims:
+        payer = c.payer_name or "Unknown"
+        if payer not in by_payer:
+            by_payer[payer] = {
+                "payer": payer,
+                "total_claims": 0,
+                "won": 0,
+                "lost": 0,
+                "pending": 0,
+                "total_denied_cents": 0,
+                "total_recovered_cents": 0,
+                "denial_codes": {},
+                "avg_response_days": None,
+                "response_days_list": [],
+            }
+        p = by_payer[payer]
+        p["total_claims"] += 1
+        p["total_denied_cents"] += c.amount_denied_cents or 0
+
+        if c.status == "won":
+            p["won"] += 1
+            p["total_recovered_cents"] += c.amount_approved_cents or 0
+        elif c.status == "lost":
+            p["lost"] += 1
+        else:
+            p["pending"] += 1
+
+        code = c.denial_code or "Unknown"
+        p["denial_codes"][code] = p["denial_codes"].get(code, 0) + 1
+
+        if c.id in response_map:
+            for resp in response_map[c.id]:
+                ca = c.created_at.replace(tzinfo=None) if c.created_at.tzinfo else c.created_at
+                ra = resp.received_at.replace(tzinfo=None) if resp.received_at.tzinfo else resp.received_at
+                days = (ra - ca).days
+                p["response_days_list"].append(days)
+
+    result = []
+    for payer, data in sorted(by_payer.items()):
+        win_rate = round(data["won"] / (data["won"] + data["lost"]) * 100, 1) if (data["won"] + data["lost"]) > 0 else None
+        avg_days = round(sum(data["response_days_list"]) / len(data["response_days_list"]), 1) if data["response_days_list"] else None
+        top_codes = sorted(data["denial_codes"].items(), key=lambda x: x[1], reverse=True)[:5]
+        result.append({
+            "payer": payer,
+            "total_claims": data["total_claims"],
+            "won": data["won"],
+            "lost": data["lost"],
+            "pending": data["pending"],
+            "win_rate": win_rate,
+            "total_denied_cents": data["total_denied_cents"],
+            "total_recovered_cents": data["total_recovered_cents"],
+            "avg_response_days": avg_days,
+            "top_denial_codes": [{"code": c, "count": n} for c, n in top_codes],
+            "contacts": contacts_by_payer.get(payer, []),
+            "deadline_days": PAYER_DEADLINES_DAYS.get(payer, 90),
+        })
+    result.sort(key=lambda x: x["total_claims"], reverse=True)
+    return result
+
+
+# ── Claim Status Distribution ───────────────────────────────────────────
+
+@app.get("/api/v1/analytics/status-distribution")
+async def status_distribution(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        rows = (await session.execute(
+            select(Claim.status, func.count(Claim.id).label("count"))
+            .where(Claim.tenant_id == tenant_id)
+            .group_by(Claim.status)
+        )).all()
+    return [{"status": r.status, "count": r.count} for r in rows]
