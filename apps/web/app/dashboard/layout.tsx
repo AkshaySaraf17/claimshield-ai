@@ -63,6 +63,9 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard/recovery", label: "Recovery" },
   { href: "/dashboard/claim-audit", label: "Audit" },
   { href: "/dashboard/team-perf", label: "Perf" },
+  { href: "/dashboard/code-lookup", label: "Lookup" },
+  { href: "/dashboard/quick-stats", label: "Stats" },
+  { href: "/dashboard/attachments", label: "Files" },
   { href: "/dashboard/audit", label: "Audit Log" },
   { href: "/dashboard/settings", label: "Settings" },
 ];

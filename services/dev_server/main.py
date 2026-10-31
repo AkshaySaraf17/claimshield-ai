@@ -5266,3 +5266,93 @@ async def team_performance(request: Request):
 
     result.sort(key=lambda x: x["claims_assigned"], reverse=True)
     return result
+
+
+# ── Denial Code Reference ──────────────────────────────────────────────
+
+DENIAL_CODE_REFERENCE = {
+    "CO-4": {"code": "CO-4", "name": "Procedure code inconsistent with modifier", "category": "coding",
+             "description": "The procedure code is inconsistent with the modifier used, or a required modifier is missing.",
+             "common_causes": ["Missing modifier", "Incorrect modifier", "Unbundling issues"],
+             "resolution_steps": ["Review modifier requirements", "Check NCCI edits", "Verify pairing"], "source": "CMS CARC/RARC"},
+    "CO-16": {"code": "CO-16", "name": "Claim lacks information for adjudication", "category": "documentation",
+              "description": "Missing or invalid information needed to adjudicate the claim.",
+              "common_causes": ["Missing diagnosis code", "Incomplete patient info", "Missing referring provider"],
+              "resolution_steps": ["Review for completeness", "Add missing data", "Resubmit"], "source": "CMS CARC/RARC"},
+    "CO-29": {"code": "CO-29", "name": "Time limit for filing expired", "category": "timely_filing",
+              "description": "The time limit for filing has passed per payer requirements.",
+              "common_causes": ["Late submission", "Delayed secondary filing", "Past deadline"],
+              "resolution_steps": ["Check original date", "File proof of timely filing", "Request exception"], "source": "CMS CARC/RARC"},
+    "CO-50": {"code": "CO-50", "name": "Non-covered service", "category": "coverage",
+              "description": "Service not covered under patient's benefit plan.",
+              "common_causes": ["Service exclusion", "Plan limitation", "Experimental designation"],
+              "resolution_steps": ["Verify benefits", "Request medical necessity review", "Provide documentation"], "source": "CMS CARC/RARC"},
+    "CO-97": {"code": "CO-97", "name": "Benefit included in another service", "category": "bundling",
+              "description": "Payment included in allowance for another adjudicated service.",
+              "common_causes": ["Bundled procedure", "NCCI edit pair", "Global service"],
+              "resolution_steps": ["Check NCCI edits", "Use modifier 59 if distinct", "Review global period"], "source": "CMS CARC/RARC"},
+    "CO-197": {"code": "CO-197", "name": "Precertification absent", "category": "authorization",
+               "description": "Prior authorization was not obtained before service.",
+               "common_causes": ["No prior auth", "Auth expired", "Wrong auth number"],
+               "resolution_steps": ["Obtain retroactive auth", "Submit auth number", "Appeal with justification"], "source": "CMS CARC/RARC"},
+    "PR-1": {"code": "PR-1", "name": "Deductible amount", "category": "patient_responsibility",
+             "description": "Amount applied to patient deductible.",
+             "common_causes": ["Deductible not met", "Beginning of benefit year", "High-deductible plan"],
+             "resolution_steps": ["Verify deductible status", "Bill patient", "Check COB"], "source": "CMS CARC/RARC"},
+    "PR-2": {"code": "PR-2", "name": "Coinsurance amount", "category": "patient_responsibility",
+             "description": "Patient coinsurance responsibility.",
+             "common_causes": ["Standard coinsurance", "Out-of-network", "Plan design"],
+             "resolution_steps": ["Bill patient", "Verify in-network status"], "source": "CMS CARC/RARC"},
+    "PR-3": {"code": "PR-3", "name": "Co-payment amount", "category": "patient_responsibility",
+             "description": "Patient copayment amount for this service.",
+             "common_causes": ["Office visit copay", "Specialist copay", "ER copay"],
+             "resolution_steps": ["Collect copay", "Verify copay amount"], "source": "CMS CARC/RARC"},
+}
+
+
+@app.get("/api/v1/denial-code-reference")
+async def denial_code_reference(q: str = Query(default="")):
+    if not q:
+        return list(DENIAL_CODE_REFERENCE.values())
+    q_lower = q.lower()
+    return [
+        v for v in DENIAL_CODE_REFERENCE.values()
+        if q_lower in v["code"].lower() or q_lower in v["name"].lower() or q_lower in v["category"].lower()
+    ]
+
+
+# ── Quick Stats ─────────────────────────────────────────────────────────
+
+@app.get("/api/v1/analytics/quick-stats")
+async def quick_stats(request: Request):
+    tenant_id = _get_tenant_id(request)
+    now = datetime.utcnow()
+    async with request.app.state.session_factory() as session:
+        total_claims = (await session.execute(
+            select(func.count(Claim.id)).where(Claim.tenant_id == tenant_id)
+        )).scalar() or 0
+        active_claims = (await session.execute(
+            select(func.count(Claim.id)).where(Claim.tenant_id == tenant_id, Claim.status.in_(["pending_review", "in_progress", "needs_review", "approved", "sent"]))
+        )).scalar() or 0
+        won_claims = (await session.execute(
+            select(func.count(Claim.id)).where(Claim.tenant_id == tenant_id, Claim.status == "won")
+        )).scalar() or 0
+        total_denied = (await session.execute(
+            select(func.sum(Claim.amount_denied_cents)).where(Claim.tenant_id == tenant_id)
+        )).scalar() or 0
+        total_recovered = (await session.execute(
+            select(func.sum(Claim.amount_approved_cents)).where(Claim.tenant_id == tenant_id, Claim.status == "won")
+        )).scalar() or 0
+        overdue = (await session.execute(
+            select(func.count(Claim.id)).where(Claim.tenant_id == tenant_id, Claim.filing_deadline < now, Claim.status.in_(["pending_review", "in_progress", "needs_review"]))
+        )).scalar() or 0
+        pending_appeals = (await session.execute(
+            select(func.count(Appeal.id)).where(Appeal.tenant_id == tenant_id, Appeal.needs_review == True, Appeal.approved_at == None)
+        )).scalar() or 0
+
+    return {
+        "total_claims": total_claims, "active_claims": active_claims, "won_claims": won_claims,
+        "total_denied_cents": total_denied, "total_recovered_cents": total_recovered,
+        "recovery_rate": round(total_recovered / total_denied * 100, 1) if total_denied > 0 else 0,
+        "overdue_claims": overdue, "pending_appeals": pending_appeals,
+    }
