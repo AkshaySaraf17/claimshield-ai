@@ -40,6 +40,9 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard/clinics", label: "Clinics" },
   { href: "/dashboard/scorecard", label: "KPIs" },
   { href: "/dashboard/notifications", label: "Notifs" },
+  { href: "/dashboard/trends", label: "Trends" },
+  { href: "/dashboard/exports", label: "Exports" },
+  { href: "/dashboard/health", label: "Health" },
   { href: "/dashboard/audit", label: "Audit Log" },
   { href: "/dashboard/settings", label: "Settings" },
 ];

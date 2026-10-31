@@ -3623,3 +3623,153 @@ async def update_notification_prefs(request: Request):
         await session.commit()
 
     return {"status": "updated"}
+
+
+# ---------------------------------------------------------------------------
+# Denial Trends (monthly aggregation)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/analytics/trends")
+async def denial_trends(request: Request):
+    tenant_id = _get_tenant_id(request)
+    months = int(request.query_params.get("months", "6"))
+    async with request.app.state.session_factory() as session:
+        claims = (await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id)
+        )).scalars().all()
+
+    now = datetime.now(timezone.utc)
+    buckets: dict[str, dict] = {}
+    for i in range(months):
+        dt = now - timedelta(days=30 * i)
+        key = dt.strftime("%Y-%m")
+        buckets[key] = {
+            "month": key,
+            "new_claims": 0,
+            "total_denied_cents": 0,
+            "total_recovered_cents": 0,
+            "won": 0,
+            "lost": 0,
+            "by_code": {},
+            "by_payer": {},
+        }
+
+    for c in claims:
+        key = c.created_at.strftime("%Y-%m")
+        if key not in buckets:
+            continue
+        b = buckets[key]
+        b["new_claims"] += 1
+        b["total_denied_cents"] += c.amount_denied_cents or 0
+        if c.status == "won":
+            b["won"] += 1
+            b["total_recovered_cents"] += c.amount_approved_cents or 0
+        elif c.status == "lost":
+            b["lost"] += 1
+        if c.denial_code:
+            b["by_code"][c.denial_code] = b["by_code"].get(c.denial_code, 0) + 1
+        if c.payer_name:
+            b["by_payer"][c.payer_name] = b["by_payer"].get(c.payer_name, 0) + 1
+
+    result = []
+    for key in sorted(buckets.keys()):
+        b = buckets[key]
+        b["top_codes"] = sorted(b["by_code"].items(), key=lambda x: -x[1])[:5]
+        b["top_payers"] = sorted(b["by_payer"].items(), key=lambda x: -x[1])[:5]
+        del b["by_code"]
+        del b["by_payer"]
+        b["top_codes"] = [{"code": c, "count": n} for c, n in b["top_codes"]]
+        b["top_payers"] = [{"payer": p, "count": n} for p, n in b["top_payers"]]
+        result.append(b)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Data Export Dashboard (list available exports)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/exports")
+async def list_exports(request: Request):
+    return [
+        {
+            "id": "claims-csv",
+            "name": "Claims CSV Export",
+            "description": "All claims with status, amounts, and denial codes",
+            "url": "/api/v1/claims/export/csv",
+            "format": "CSV",
+        },
+        {
+            "id": "summary-text",
+            "name": "Summary Text Report",
+            "description": "Plain-text executive summary of denial operations",
+            "url": "/api/v1/reports/summary-text",
+            "format": "TXT",
+        },
+        {
+            "id": "scorecard-json",
+            "name": "KPI Scorecard (JSON)",
+            "description": "Machine-readable KPI data for dashboards",
+            "url": "/api/v1/analytics/scorecard",
+            "format": "JSON",
+        },
+        {
+            "id": "financials-json",
+            "name": "Financial Report (JSON)",
+            "description": "Reconciliation data with monthly trends",
+            "url": "/api/v1/analytics/financials",
+            "format": "JSON",
+        },
+        {
+            "id": "team-json",
+            "name": "Team Performance (JSON)",
+            "description": "Per-member productivity metrics",
+            "url": "/api/v1/analytics/team-performance",
+            "format": "JSON",
+        },
+    ]
+
+
+# ---------------------------------------------------------------------------
+# System Health / Status
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/system/health")
+async def system_health(request: Request):
+    import time
+    start = time.monotonic()
+    tenant_id = _get_tenant_id(request)
+
+    db_ok = False
+    claim_count = 0
+    appeal_count = 0
+    audit_count = 0
+    try:
+        async with request.app.state.session_factory() as session:
+            claim_count = (await session.execute(
+                select(func.count(Claim.id)).where(Claim.tenant_id == tenant_id)
+            )).scalar_one()
+            appeal_count = (await session.execute(
+                select(func.count(Appeal.id)).where(Appeal.tenant_id == tenant_id)
+            )).scalar_one()
+            audit_count = (await session.execute(
+                select(func.count(AuditLog.id)).where(AuditLog.tenant_id == tenant_id)
+            )).scalar_one()
+            db_ok = True
+    except Exception:
+        pass
+
+    elapsed_ms = round((time.monotonic() - start) * 1000, 1)
+
+    return {
+        "status": "healthy" if db_ok else "degraded",
+        "database": "connected" if db_ok else "error",
+        "response_time_ms": elapsed_ms,
+        "counts": {
+            "claims": claim_count,
+            "appeals": appeal_count,
+            "audit_entries": audit_count,
+        },
+        "version": "0.1.0-dev",
+        "environment": "development",
+    }
