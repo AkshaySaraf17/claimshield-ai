@@ -57,6 +57,7 @@ class Claim(Base):
     raw_clinical_notes: Mapped[str] = mapped_column(Text, nullable=False)
     amount_denied_cents: Mapped[int | None] = mapped_column(BigInteger)
     amount_approved_cents: Mapped[int | None] = mapped_column(BigInteger)
+    filing_deadline: Mapped[datetime | None] = mapped_column(DateTime)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending_review", index=True)
     reviewed_by: Mapped[str | None] = mapped_column(Text)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime)

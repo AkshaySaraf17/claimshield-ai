@@ -35,6 +35,8 @@ export default function ClaimsListPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("");
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [searchInput, setSearchInput] = useState<string>("");
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 25;
 
@@ -49,6 +51,7 @@ export default function ClaimsListPage() {
         offset: String(page * PAGE_SIZE),
       });
       if (statusFilter) params.set("status", statusFilter);
+      if (searchQuery) params.set("search", searchQuery);
 
       const url = apiBase
         ? `${apiBase}/api/v1/claims?${params}`
@@ -62,7 +65,7 @@ export default function ClaimsListPage() {
     } finally {
       setLoading(false);
     }
-  }, [apiBase, statusFilter, page]);
+  }, [apiBase, statusFilter, searchQuery, page]);
 
   useEffect(() => {
     fetchClaims();
@@ -83,7 +86,34 @@ export default function ClaimsListPage() {
       </header>
 
       {/* Filters */}
-      <div className="mb-4 flex items-center gap-3">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <form
+          onSubmit={(e) => { e.preventDefault(); setSearchQuery(searchInput); setPage(0); }}
+          className="flex items-center gap-1"
+        >
+          <input
+            type="text"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="Search payer, code, reason..."
+            className="w-56 rounded border border-ink-300/50 px-3 py-1 text-sm focus:border-ledger-500 focus:outline-none focus:ring-1 focus:ring-ledger-500"
+          />
+          <button
+            type="submit"
+            className="rounded bg-ink-950 px-3 py-1 text-sm text-white hover:bg-ink-900"
+          >
+            Search
+          </button>
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => { setSearchInput(""); setSearchQuery(""); setPage(0); }}
+              className="rounded border border-ink-300/50 px-2 py-1 text-sm text-ink-500 hover:bg-ink-100"
+            >
+              Clear
+            </button>
+          )}
+        </form>
         <label className="text-sm text-ink-600">
           Status:
           <select

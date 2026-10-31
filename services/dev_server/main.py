@@ -10,7 +10,7 @@ import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Query, Request
@@ -21,6 +21,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from .models import Base, Tenant, Clinic, Claim, Appeal, AuditLog
 from .seed import DEV_TENANT_ID, DEV_CLINIC_ID, DEV_USER_ID, build_seed_objects
+
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from services.claims.app.edi835 import parse_835, era_to_denial_summaries
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -99,6 +103,31 @@ class StatusTransition(BaseModel):
     reviewed_by: str | None = None
 
 
+PAYER_FILING_DAYS: dict[str, int] = {
+    "aetna": 90,
+    "unitedhealthcare": 90,
+    "bcbs": 120,
+    "blue cross blue shield": 120,
+    "blue cross blueshield": 120,
+    "cigna": 90,
+    "humana": 365,
+    "medicare": 120,
+    "medicaid": 365,
+}
+DEFAULT_FILING_DAYS = 90
+
+
+def _compute_deadline(payer_name: str | None) -> datetime:
+    days = DEFAULT_FILING_DAYS
+    if payer_name:
+        normalized = payer_name.lower().strip()
+        for key, d in PAYER_FILING_DAYS.items():
+            if key in normalized:
+                days = d
+                break
+    return datetime.now(timezone.utc) + timedelta(days=days)
+
+
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "pending_review": {"in_progress", "cancelled"},
     "in_progress": {"needs_review", "cancelled"},
@@ -132,6 +161,7 @@ async def create_claim(body: ClaimCreate, request: Request):
             raw_denial_text=body.raw_denial_text,
             raw_clinical_notes=body.raw_clinical_notes,
             amount_denied_cents=body.amount_denied_cents,
+            filing_deadline=_compute_deadline(body.payer_name),
         )
         session.add(claim)
         await _write_audit(session, tenant_id, _get_user_id(request), "claim.created", "claim", claim.id)
@@ -144,6 +174,7 @@ async def create_claim(body: ClaimCreate, request: Request):
 async def list_claims(
     request: Request,
     status: str | None = None,
+    search: str | None = None,
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0, ge=0),
 ):
@@ -152,6 +183,15 @@ async def list_claims(
         q = select(Claim).where(Claim.tenant_id == tenant_id).order_by(Claim.created_at.desc()).limit(limit).offset(offset)
         if status:
             q = q.where(Claim.status == status)
+        if search:
+            pattern = f"%{search}%"
+            from sqlalchemy import or_
+            q = q.where(or_(
+                Claim.payer_name.ilike(pattern),
+                Claim.denial_code.ilike(pattern),
+                Claim.denial_reason.ilike(pattern),
+                Claim.claim_number.ilike(pattern),
+            ))
         result = await session.execute(q)
         return [_claim_dict(c) for c in result.scalars().all()]
 
@@ -219,6 +259,7 @@ def _claim_dict(c: Claim) -> dict:
         "raw_clinical_notes": c.raw_clinical_notes,
         "amount_denied_cents": c.amount_denied_cents,
         "amount_approved_cents": c.amount_approved_cents,
+        "filing_deadline": c.filing_deadline.isoformat() if c.filing_deadline else None,
         "status": c.status,
         "reviewed_by": c.reviewed_by,
         "reviewed_at": c.reviewed_at.isoformat() if c.reviewed_at else None,
@@ -561,4 +602,116 @@ async def get_stats(request: Request):
         "appeals_pending_review": pending_review,
         "by_payer": by_payer,
         "recent_activity": recent_activity,
+    }
+
+
+# ---------------------------------------------------------------------------
+# EDI 835 parse and bulk import
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/deadlines")
+async def list_deadlines(request: Request, limit: int = Query(default=50, le=200)):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        q = (
+            select(Claim)
+            .where(
+                Claim.tenant_id == tenant_id,
+                Claim.filing_deadline.isnot(None),
+                Claim.status.notin_(["won", "lost", "cancelled"]),
+            )
+            .order_by(Claim.filing_deadline.asc())
+            .limit(limit)
+        )
+        result = await session.execute(q)
+        now = datetime.utcnow()
+        claims = []
+        for c in result.scalars().all():
+            d = _claim_dict(c)
+            if c.filing_deadline:
+                dl = c.filing_deadline.replace(tzinfo=None) if c.filing_deadline.tzinfo else c.filing_deadline
+                delta = dl - now
+                d["days_remaining"] = max(delta.days, 0)
+                d["is_overdue"] = delta.days < 0
+                d["urgency"] = (
+                    "overdue" if delta.days < 0
+                    else "critical" if delta.days <= 7
+                    else "urgent" if delta.days <= 30
+                    else "normal"
+                )
+            claims.append(d)
+        return claims
+
+
+class EDI835Upload(BaseModel):
+    raw_edi: str
+
+
+@app.post("/api/v1/edi835/parse")
+async def parse_edi835(body: EDI835Upload):
+    era = parse_835(body.raw_edi)
+    summaries = era_to_denial_summaries(era)
+    return {
+        "payer_name": era.payer_name,
+        "payee_name": era.payee_name,
+        "check_number": era.check_number,
+        "check_date": era.check_date.isoformat() if era.check_date else None,
+        "total_paid_cents": era.total_paid_cents,
+        "segment_count": era.raw_segment_count,
+        "claims_found": len(summaries),
+        "claims": summaries,
+        "errors": era.errors,
+    }
+
+
+@app.post("/api/v1/edi835/import", status_code=201)
+async def import_edi835(body: EDI835Upload, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    era = parse_835(body.raw_edi)
+    summaries = era_to_denial_summaries(era)
+
+    created_ids = []
+    async with app.state.session_factory() as session:
+        for s in summaries:
+            denial_code = s.get("denial_code")
+            svc_lines = s.get("service_lines", [])
+            reason_parts = []
+            for svc in svc_lines:
+                for adj in svc.get("adjustments", []):
+                    reason_parts.append(f"{adj['group']}-{adj['reason']}: ${adj['amount_cents'] / 100:.2f}")
+            denial_reason = "; ".join(reason_parts) if reason_parts else None
+
+            raw_text = (
+                f"EDI 835 Remittance — Payer: {s.get('payer_name', 'Unknown')}, "
+                f"Claim ID: {s.get('claim_id', 'N/A')}, "
+                f"Denial code: {denial_code or 'N/A'}, "
+                f"Charged: ${s.get('total_charge_cents', 0) / 100:.2f}, "
+                f"Paid: ${s.get('total_paid_cents', 0) / 100:.2f}, "
+                f"Denied: ${s.get('amount_denied_cents', 0) / 100:.2f}"
+            )
+
+            claim = Claim(
+                id=str(uuid.uuid4()),
+                tenant_id=tenant_id,
+                clinic_id=DEV_CLINIC_ID,
+                claim_number=s.get("claim_id"),
+                payer_name=s.get("payer_name"),
+                denial_code=denial_code,
+                denial_reason=denial_reason,
+                raw_denial_text=raw_text,
+                raw_clinical_notes="Imported from EDI 835 remittance advice",
+                amount_denied_cents=s.get("amount_denied_cents", 0),
+                filing_deadline=_compute_deadline(s.get("payer_name")),
+            )
+            session.add(claim)
+            await _write_audit(session, tenant_id, user_id, "claim.created", "claim", claim.id, {"source": "edi835"})
+            created_ids.append(claim.id)
+
+        await session.commit()
+
+    return {
+        "imported": len(created_ids),
+        "claim_ids": created_ids,
+        "payer_name": era.payer_name,
     }
