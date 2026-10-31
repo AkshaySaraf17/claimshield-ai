@@ -3016,3 +3016,120 @@ async def predict_appeal_success(claim_id: str, request: Request):
         ),
         "source": "Deterministic model based on historical win rates by denial code, payer, amount, and documentation quality",
     }
+
+
+# ── Denial Heatmap ────────────────────────────────────────────────────
+
+
+@app.get("/api/v1/analytics/heatmap")
+async def denial_heatmap(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        result = await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id)
+        )
+        claims = result.scalars().all()
+
+    matrix: dict[str, dict[str, int]] = {}
+    payers_set: set[str] = set()
+    codes_set: set[str] = set()
+
+    for c in claims:
+        payer = c.payer_name or "Unknown"
+        code = c.denial_code or "Unknown"
+        payers_set.add(payer)
+        codes_set.add(code)
+        if payer not in matrix:
+            matrix[payer] = {}
+        matrix[payer][code] = matrix[payer].get(code, 0) + 1
+
+    payers = sorted(payers_set)
+    codes = sorted(codes_set)
+    max_val = max((matrix.get(p, {}).get(c, 0) for p in payers for c in codes), default=0)
+
+    cells = []
+    for p in payers:
+        for c in codes:
+            count = matrix.get(p, {}).get(c, 0)
+            cells.append({"payer": p, "code": c, "count": count})
+
+    return {"payers": payers, "codes": codes, "cells": cells, "max_count": max_val}
+
+
+# ── Claim Escalation ──────────────────────────────────────────────────
+
+
+@app.get("/api/v1/escalations")
+async def list_escalations(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        result = await session.execute(
+            select(Claim).where(
+                Claim.tenant_id == tenant_id,
+            ).order_by(Claim.created_at.desc())
+        )
+        claims = result.scalars().all()
+        notes_result = await session.execute(
+            select(ClaimNote).where(ClaimNote.tenant_id == tenant_id)
+        )
+        notes = notes_result.scalars().all()
+
+    now = datetime.now(timezone.utc)
+    escalations = []
+    for c in claims:
+        age = (now - c.created_at.replace(tzinfo=timezone.utc)).days
+        amount = c.amount_denied_cents or 0
+        claim_notes = [n for n in notes if n.claim_id == c.id and "escalat" in (n.content or "").lower()]
+
+        reasons = []
+        if age > 14 and c.status in ("pending_review", "in_progress"):
+            reasons.append(f"Stale {age}d in {c.status.replace('_', ' ')}")
+        if amount > 1000000:
+            reasons.append(f"High value: ${amount / 100:,.2f}")
+        if c.status == "lost":
+            reasons.append("Appeal lost — consider re-appeal")
+
+        if reasons or claim_notes:
+            escalations.append({
+                "claim_id": c.id,
+                "claim_number": c.claim_number,
+                "payer": c.payer_name,
+                "status": c.status,
+                "amount_denied_cents": amount,
+                "age_days": age,
+                "reasons": reasons,
+                "escalation_notes": [{"content": n.content, "author": n.author_id, "created_at": n.created_at.isoformat()} for n in claim_notes],
+                "priority": "high" if amount > 500000 or age > 30 else "medium" if amount > 100000 or age > 14 else "low",
+            })
+
+    escalations.sort(key=lambda x: ({"high": 0, "medium": 1, "low": 2}.get(x["priority"], 3), -x["age_days"]))
+    return escalations
+
+
+@app.post("/api/v1/claims/{claim_id}/escalate", status_code=201)
+async def escalate_claim(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    body = await request.json()
+    reason = body.get("reason", "Escalated for review")
+
+    async with request.app.state.session_factory() as session:
+        result = await session.execute(
+            select(Claim).where(Claim.id == claim_id, Claim.tenant_id == tenant_id)
+        )
+        claim = result.scalar_one_or_none()
+        if not claim:
+            raise HTTPException(404, "Claim not found")
+
+        note = ClaimNote(
+            id=str(uuid4()),
+            tenant_id=tenant_id,
+            claim_id=claim_id,
+            author_id=user_id,
+            content=f"[ESCALATION] {reason}",
+        )
+        session.add(note)
+        await _write_audit(session, tenant_id, user_id, "escalate", "claim", claim_id, {"reason": reason})
+        await session.commit()
+
+    return {"status": "escalated", "claim_id": claim_id, "note_id": note.id}

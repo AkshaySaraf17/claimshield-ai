@@ -34,6 +34,8 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard/financials", label: "Finance" },
   { href: "/dashboard/aging", label: "Aging" },
   { href: "/dashboard/sla", label: "SLA" },
+  { href: "/dashboard/heatmap", label: "Heatmap" },
+  { href: "/dashboard/escalations", label: "Escalate" },
   { href: "/dashboard/audit", label: "Audit Log" },
   { href: "/dashboard/settings", label: "Settings" },
 ];
