@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, Tenant, Clinic, Claim, Appeal, ClaimNote, ClaimAttachment, UserPreference, AuditLog, CustomTemplate, ClaimAssignment, ClaimTag, PayerResponse, ClaimComment, RoutingRule
+from .models import Base, Tenant, Clinic, Claim, Appeal, ClaimNote, ClaimAttachment, UserPreference, AuditLog, CustomTemplate, ClaimAssignment, ClaimTag, PayerResponse, ClaimComment, RoutingRule, ClaimWatchlist, PayerContact, ClaimCost
 from .seed import DEV_TENANT_ID, DEV_CLINIC_ID, DEV_USER_ID, build_seed_objects
 
 import sys
@@ -4057,3 +4057,285 @@ async def auto_route_claim(claim_id: str, request: Request):
             "assigned_to": matched_rule.assign_to,
             "assigned_to_name": TEAM_MEMBERS.get(matched_rule.assign_to, matched_rule.assign_to),
         }
+
+
+# ---------------------------------------------------------------------------
+# Claim Watchlist
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/watchlist")
+async def get_watchlist(request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with request.app.state.session_factory() as session:
+        rows = (await session.execute(
+            select(ClaimWatchlist)
+            .where(ClaimWatchlist.tenant_id == tenant_id, ClaimWatchlist.user_id == user_id)
+            .order_by(ClaimWatchlist.created_at.desc())
+        )).scalars().all()
+        claim_ids = [w.claim_id for w in rows]
+        if not claim_ids:
+            return []
+        claims = (await session.execute(
+            select(Claim).where(Claim.tenant_id == tenant_id, Claim.id.in_(claim_ids))
+        )).scalars().all()
+        claim_map = {c.id: c for c in claims}
+        result = []
+        for w in rows:
+            c = claim_map.get(w.claim_id)
+            if c:
+                result.append({
+                    "watchlist_id": w.id,
+                    "claim_id": c.id,
+                    "claim_number": c.claim_number,
+                    "payer_name": c.payer_name,
+                    "denial_code": c.denial_code,
+                    "status": c.status,
+                    "amount_denied_cents": c.amount_denied_cents,
+                    "added_at": w.created_at.isoformat(),
+                })
+        return result
+
+
+@app.post("/api/v1/watchlist", status_code=201)
+async def add_to_watchlist(request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    body = await request.json()
+    claim_id = body.get("claim_id", "")
+    if not claim_id:
+        return JSONResponse({"detail": "claim_id required"}, status_code=400)
+
+    async with request.app.state.session_factory() as session:
+        existing = (await session.execute(
+            select(ClaimWatchlist).where(
+                ClaimWatchlist.tenant_id == tenant_id,
+                ClaimWatchlist.user_id == user_id,
+                ClaimWatchlist.claim_id == claim_id,
+            )
+        )).scalar_one_or_none()
+        if existing:
+            return {"id": existing.id, "already_watched": True}
+
+        entry = ClaimWatchlist(
+            id=str(uuid.uuid4()),
+            tenant_id=tenant_id,
+            claim_id=claim_id,
+            user_id=user_id,
+        )
+        session.add(entry)
+        await session.commit()
+        return {"id": entry.id, "claim_id": claim_id}
+
+
+@app.delete("/api/v1/watchlist/{watchlist_id}")
+async def remove_from_watchlist(watchlist_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with request.app.state.session_factory() as session:
+        entry = (await session.execute(
+            select(ClaimWatchlist).where(
+                ClaimWatchlist.tenant_id == tenant_id,
+                ClaimWatchlist.id == watchlist_id,
+                ClaimWatchlist.user_id == user_id,
+            )
+        )).scalar_one_or_none()
+        if not entry:
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        await session.delete(entry)
+        await session.commit()
+        return {"deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# Payer Contacts Directory
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/payer-contacts")
+async def list_payer_contacts(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        rows = (await session.execute(
+            select(PayerContact)
+            .where(PayerContact.tenant_id == tenant_id)
+            .order_by(PayerContact.payer_name.asc())
+        )).scalars().all()
+        return [
+            {
+                "id": pc.id,
+                "payer_name": pc.payer_name,
+                "contact_name": pc.contact_name,
+                "phone": pc.phone,
+                "fax": pc.fax,
+                "email": pc.email,
+                "address": pc.address,
+                "department": pc.department,
+                "notes": pc.notes,
+                "created_at": pc.created_at.isoformat(),
+            }
+            for pc in rows
+        ]
+
+
+@app.post("/api/v1/payer-contacts", status_code=201)
+async def create_payer_contact(request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    body = await request.json()
+    payer_name = (body.get("payer_name") or "").strip()
+    if not payer_name:
+        return JSONResponse({"detail": "payer_name required"}, status_code=400)
+
+    async with request.app.state.session_factory() as session:
+        pc = PayerContact(
+            id=str(uuid.uuid4()),
+            tenant_id=tenant_id,
+            payer_name=payer_name,
+            contact_name=body.get("contact_name"),
+            phone=body.get("phone"),
+            fax=body.get("fax"),
+            email=body.get("email"),
+            address=body.get("address"),
+            department=body.get("department"),
+            notes=body.get("notes"),
+            created_by=user_id,
+        )
+        session.add(pc)
+        await session.commit()
+        await _write_audit(session, tenant_id, user_id, "payer_contact.create", "payer_contact", pc.id,
+                           {"payer_name": payer_name})
+        return {"id": pc.id, "payer_name": payer_name}
+
+
+@app.delete("/api/v1/payer-contacts/{contact_id}")
+async def delete_payer_contact(contact_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with request.app.state.session_factory() as session:
+        pc = (await session.execute(
+            select(PayerContact).where(PayerContact.tenant_id == tenant_id, PayerContact.id == contact_id)
+        )).scalar_one_or_none()
+        if not pc:
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        await session.delete(pc)
+        await session.commit()
+        await _write_audit(session, tenant_id, user_id, "payer_contact.delete", "payer_contact", contact_id, {})
+        return {"deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# Appeal Letter History (versions)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/claims/{claim_id}/letter-history")
+async def letter_history(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        appeals = (await session.execute(
+            select(Appeal)
+            .where(Appeal.tenant_id == tenant_id, Appeal.claim_id == claim_id)
+            .order_by(Appeal.version.asc())
+        )).scalars().all()
+        return [
+            {
+                "appeal_id": a.id,
+                "version": a.version,
+                "letter_text": a.letter_text,
+                "confidence": a.confidence,
+                "needs_review": a.needs_review,
+                "approved_by": a.approved_by,
+                "approved_at": a.approved_at.isoformat() if a.approved_at else None,
+                "created_at": a.created_at.isoformat(),
+            }
+            for a in appeals
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Claim Cost Tracker
+# ---------------------------------------------------------------------------
+
+COST_CATEGORIES = ["staff_time", "filing_fee", "legal", "copying", "postage", "other"]
+
+
+@app.get("/api/v1/claims/{claim_id}/costs")
+async def list_claim_costs(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        rows = (await session.execute(
+            select(ClaimCost)
+            .where(ClaimCost.tenant_id == tenant_id, ClaimCost.claim_id == claim_id)
+            .order_by(ClaimCost.created_at.desc())
+        )).scalars().all()
+        total = sum(c.amount_cents for c in rows)
+        return {
+            "claim_id": claim_id,
+            "total_cents": total,
+            "items": [
+                {
+                    "id": c.id,
+                    "category": c.category,
+                    "description": c.description,
+                    "amount_cents": c.amount_cents,
+                    "recorded_by": c.recorded_by,
+                    "recorded_by_name": TEAM_MEMBERS.get(c.recorded_by, c.recorded_by),
+                    "created_at": c.created_at.isoformat(),
+                }
+                for c in rows
+            ],
+        }
+
+
+@app.post("/api/v1/claims/{claim_id}/costs", status_code=201)
+async def add_claim_cost(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    body = await request.json()
+
+    category = body.get("category", "")
+    if category not in COST_CATEGORIES:
+        return JSONResponse({"detail": f"category must be one of {COST_CATEGORIES}"}, status_code=400)
+    desc = (body.get("description") or "").strip()
+    amount = body.get("amount_cents", 0)
+    if not isinstance(amount, int) or amount <= 0:
+        return JSONResponse({"detail": "amount_cents must be a positive integer"}, status_code=400)
+
+    async with request.app.state.session_factory() as session:
+        cost = ClaimCost(
+            id=str(uuid.uuid4()),
+            tenant_id=tenant_id,
+            claim_id=claim_id,
+            category=category,
+            description=desc or category,
+            amount_cents=amount,
+            recorded_by=user_id,
+        )
+        session.add(cost)
+        await session.commit()
+        await _write_audit(session, tenant_id, user_id, "claim_cost.create", "claim", claim_id,
+                           {"cost_id": cost.id, "category": category, "amount_cents": amount})
+        return {"id": cost.id, "category": category, "amount_cents": amount}
+
+
+@app.get("/api/v1/analytics/cost-summary")
+async def cost_summary(request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with request.app.state.session_factory() as session:
+        costs = (await session.execute(
+            select(ClaimCost).where(ClaimCost.tenant_id == tenant_id)
+        )).scalars().all()
+
+    by_category: dict[str, int] = {}
+    by_claim: dict[str, int] = {}
+    total = 0
+    for c in costs:
+        by_category[c.category] = by_category.get(c.category, 0) + c.amount_cents
+        by_claim[c.claim_id] = by_claim.get(c.claim_id, 0) + c.amount_cents
+        total += c.amount_cents
+
+    return {
+        "total_cents": total,
+        "total_entries": len(costs),
+        "by_category": [{"category": k, "total_cents": v} for k, v in sorted(by_category.items(), key=lambda x: -x[1])],
+        "claims_with_costs": len(by_claim),
+    }
