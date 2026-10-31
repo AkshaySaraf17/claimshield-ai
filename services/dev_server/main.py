@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, Tenant, Clinic, Claim, Appeal, ClaimNote, AuditLog
+from .models import Base, Tenant, Clinic, Claim, Appeal, ClaimNote, ClaimAttachment, UserPreference, AuditLog
 from .seed import DEV_TENANT_ID, DEV_CLINIC_ID, DEV_USER_ID, build_seed_objects
 
 import sys
@@ -893,6 +893,17 @@ class NoteCreate(BaseModel):
     content: str
 
 
+class AttachmentCreate(BaseModel):
+    filename: str
+    file_type: str
+    size_bytes: int = 0
+    description: str | None = None
+
+
+class PreferenceUpdate(BaseModel):
+    value: str
+
+
 @app.get("/api/v1/claims/{claim_id}/notes")
 async def list_notes(claim_id: str, request: Request):
     tenant_id = _get_tenant_id(request)
@@ -937,3 +948,451 @@ async def create_note(claim_id: str, body: NoteCreate, request: Request):
             "content": note.content,
             "created_at": note.created_at.isoformat() if note.created_at else None,
         }
+
+
+# ── Appeal Letter Template Generator (deterministic, no LLM) ──────────
+
+APPEAL_TEMPLATES: dict[str, dict] = {
+    "Medical Necessity": {
+        "category": "Medical Necessity",
+        "sections": [
+            "patient_info",
+            "denial_summary",
+            "medical_necessity_argument",
+            "clinical_evidence",
+            "regulatory_citations",
+            "closing",
+        ],
+        "source": "CMS Medicare Claims Processing Manual Ch. 1 §60",
+    },
+    "Timely Filing": {
+        "category": "Timely Filing",
+        "sections": [
+            "patient_info",
+            "denial_summary",
+            "timely_filing_argument",
+            "proof_of_timely_submission",
+            "closing",
+        ],
+        "source": "42 CFR §405.980(b)(2)",
+    },
+    "Authorization": {
+        "category": "Authorization",
+        "sections": [
+            "patient_info",
+            "denial_summary",
+            "authorization_argument",
+            "auth_reference_numbers",
+            "closing",
+        ],
+        "source": "ERISA §503; 29 CFR §2560.503-1",
+    },
+    "Coding": {
+        "category": "Coding",
+        "sections": [
+            "patient_info",
+            "denial_summary",
+            "coding_correction_argument",
+            "supporting_documentation",
+            "closing",
+        ],
+        "source": "AMA CPT Guidelines; CMS NCCI Policy Manual",
+    },
+    "Coverage": {
+        "category": "Coverage",
+        "sections": [
+            "patient_info",
+            "denial_summary",
+            "coverage_argument",
+            "plan_documentation",
+            "closing",
+        ],
+        "source": "Patient's Summary of Benefits; State Insurance Code",
+    },
+    "Duplicate": {
+        "category": "Duplicate",
+        "sections": [
+            "patient_info",
+            "denial_summary",
+            "duplicate_rebuttal",
+            "service_differentiation",
+            "closing",
+        ],
+        "source": "CMS IOM Pub. 100-04 Ch. 1 §80.3.2.2",
+    },
+}
+
+DENIAL_CODE_TO_CATEGORY: dict[str, str] = {
+    "CO-4": "Coding", "CO-16": "Information", "CO-18": "Duplicate",
+    "CO-29": "Timely Filing", "CO-45": "Fee Schedule",
+    "CO-50": "Medical Necessity", "CO-97": "Bundling",
+    "CO-109": "Coverage", "CO-197": "Authorization",
+    "CO-204": "Coverage", "CO-236": "Coding",
+}
+
+
+def _generate_appeal_letter(claim: dict, template_category: str) -> str:
+    template = APPEAL_TEMPLATES.get(template_category)
+    if not template:
+        template = APPEAL_TEMPLATES["Medical Necessity"]
+        template_category = "Medical Necessity"
+
+    today = datetime.now(timezone.utc).strftime("%B %d, %Y")
+    amount = f"${(claim.get('amount_denied_cents') or 0) / 100:,.2f}"
+
+    lines = [
+        f"Date: {today}",
+        "",
+        f"Re: Appeal of Denied Claim — {claim.get('claim_number', 'N/A')}",
+        f"Patient ID: {claim.get('patient_id', 'N/A')}",
+        f"Payer: {claim.get('payer_name', 'Unknown Payer')}",
+        f"Denial Code: {claim.get('denial_code', 'N/A')}",
+        f"Amount Denied: {amount}",
+        "",
+        "Dear Claims Review Department,",
+        "",
+        f"I am writing to formally appeal the denial of the above-referenced claim. "
+        f"The claim was denied under code {claim.get('denial_code', 'N/A')} "
+        f"({claim.get('denial_reason', 'reason not specified')}).",
+        "",
+    ]
+
+    if template_category == "Medical Necessity":
+        lines.extend([
+            "MEDICAL NECESSITY ARGUMENT",
+            "─" * 40,
+            "The services rendered were medically necessary as documented in the "
+            "patient's clinical records. The treating physician determined that "
+            "the procedure/service was required to diagnose or treat the patient's "
+            "condition based on accepted standards of medical practice.",
+            "",
+            "The clinical evidence supporting this determination includes:",
+            f"  • Clinical notes: {claim.get('raw_clinical_notes', 'See attached')}",
+            "",
+            f"Source: {template['source']}",
+        ])
+    elif template_category == "Timely Filing":
+        lines.extend([
+            "TIMELY FILING ARGUMENT",
+            "─" * 40,
+            "This claim was submitted within the required timely filing period. "
+            "Evidence of original submission date is attached. Per the applicable "
+            "filing deadline requirements, this claim remains within the allowable "
+            "window for consideration.",
+            "",
+            f"Filing deadline: {claim.get('filing_deadline', 'N/A')}",
+            "",
+            f"Source: {template['source']}",
+        ])
+    elif template_category == "Authorization":
+        lines.extend([
+            "PRIOR AUTHORIZATION ARGUMENT",
+            "─" * 40,
+            "Prior authorization was obtained for the services in question. "
+            "The authorization reference information is documented in the "
+            "patient's records. We request that this claim be reprocessed "
+            "with the authorization information on file.",
+            "",
+            f"Source: {template['source']}",
+        ])
+    elif template_category == "Coding":
+        lines.extend([
+            "CODING CORRECTION ARGUMENT",
+            "─" * 40,
+            "Upon review, the procedure codes billed accurately reflect the "
+            "services provided. The coding is consistent with the clinical "
+            "documentation and follows current CPT/HCPCS guidelines. "
+            "The modifier(s) used are appropriate for the services rendered.",
+            "",
+            f"Source: {template['source']}",
+        ])
+    elif template_category == "Coverage":
+        lines.extend([
+            "COVERAGE ARGUMENT",
+            "─" * 40,
+            "The denied services are covered under the patient's current "
+            "benefit plan. The Summary of Benefits and Coverage confirms that "
+            "the service category in question is an included benefit. We "
+            "request reprocessing of this claim under the correct benefit category.",
+            "",
+            f"Source: {template['source']}",
+        ])
+    elif template_category == "Duplicate":
+        lines.extend([
+            "DUPLICATE CLAIM REBUTTAL",
+            "─" * 40,
+            "This claim is not a duplicate. The services billed represent "
+            "distinct encounters or procedures that are separately billable. "
+            "Supporting documentation differentiating these services from any "
+            "previously adjudicated claims is attached.",
+            "",
+            f"Source: {template['source']}",
+        ])
+
+    lines.extend([
+        "",
+        "REQUESTED ACTION",
+        "─" * 40,
+        f"We respectfully request that this denial be overturned and the claim "
+        f"be reprocessed for payment of {amount}.",
+        "",
+        "Supporting documentation is enclosed. Please do not hesitate to contact "
+        "our office if additional information is required.",
+        "",
+        "Sincerely,",
+        "[Provider Name]",
+        "[Provider NPI]",
+        "[Contact Information]",
+        "",
+        f"--- Template: {template_category} | Source: {template['source']} ---",
+    ])
+
+    return "\n".join(lines)
+
+
+@app.get("/api/v1/appeal-templates")
+async def list_appeal_templates():
+    return [
+        {"category": k, "sections": v["sections"], "source": v["source"]}
+        for k, v in APPEAL_TEMPLATES.items()
+    ]
+
+
+class GenerateLetterRequest(BaseModel):
+    claim_id: str
+    template_category: str | None = None
+
+
+@app.post("/api/v1/appeal-letters/generate")
+async def generate_appeal_letter(body: GenerateLetterRequest, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        claim = await session.get(Claim, body.claim_id)
+        if not claim or claim.tenant_id != tenant_id:
+            return {"detail": "Claim not found"}, 404
+
+        claim_data = _claim_dict(claim)
+
+    category = body.template_category
+    if not category:
+        code = claim_data.get("denial_code", "")
+        category = DENIAL_CODE_TO_CATEGORY.get(code, "Medical Necessity")
+
+    letter = _generate_appeal_letter(claim_data, category)
+
+    return {
+        "claim_id": body.claim_id,
+        "template_category": category,
+        "letter_text": letter,
+        "source": APPEAL_TEMPLATES.get(category, {}).get("source", "N/A"),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# ── Claim Attachments ──────────────────────────────────────────────────
+
+@app.get("/api/v1/claims/{claim_id}/attachments")
+async def list_attachments(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        q = (
+            select(ClaimAttachment)
+            .where(ClaimAttachment.claim_id == claim_id, ClaimAttachment.tenant_id == tenant_id)
+            .order_by(ClaimAttachment.created_at.desc())
+        )
+        result = await session.execute(q)
+        return [
+            {
+                "id": a.id,
+                "claim_id": a.claim_id,
+                "filename": a.filename,
+                "file_type": a.file_type,
+                "size_bytes": a.size_bytes,
+                "uploaded_by": a.uploaded_by,
+                "description": a.description,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            }
+            for a in result.scalars().all()
+        ]
+
+
+@app.post("/api/v1/claims/{claim_id}/attachments", status_code=201)
+async def create_attachment(claim_id: str, body: AttachmentCreate, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with app.state.session_factory() as session:
+        att = ClaimAttachment(
+            tenant_id=tenant_id,
+            claim_id=claim_id,
+            filename=body.filename,
+            file_type=body.file_type,
+            size_bytes=body.size_bytes,
+            uploaded_by=user_id,
+            description=body.description,
+        )
+        session.add(att)
+        await _write_audit(session, tenant_id, user_id, "attachment.created", "claim", claim_id, {"filename": body.filename})
+        await session.commit()
+        return {
+            "id": att.id,
+            "claim_id": att.claim_id,
+            "filename": att.filename,
+            "file_type": att.file_type,
+            "size_bytes": att.size_bytes,
+            "uploaded_by": att.uploaded_by,
+            "description": att.description,
+            "created_at": att.created_at.isoformat() if att.created_at else None,
+        }
+
+
+@app.delete("/api/v1/claims/{claim_id}/attachments/{attachment_id}")
+async def delete_attachment(claim_id: str, attachment_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with app.state.session_factory() as session:
+        att = await session.get(ClaimAttachment, attachment_id)
+        if not att or att.tenant_id != tenant_id:
+            return {"detail": "Not found"}, 404
+        await _write_audit(session, tenant_id, user_id, "attachment.deleted", "claim", claim_id, {"filename": att.filename})
+        await session.delete(att)
+        await session.commit()
+        return {"deleted": True}
+
+
+# ── User Preferences ──────────────────────────────────────────────────
+
+DEFAULT_PREFERENCES = {
+    "notification_email": "true",
+    "notification_deadline_days": "7",
+    "default_view": "claims",
+    "items_per_page": "25",
+    "theme": "light",
+    "auto_assign_appeals": "false",
+}
+
+
+@app.get("/api/v1/preferences")
+async def get_preferences(request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with app.state.session_factory() as session:
+        q = select(UserPreference).where(
+            UserPreference.tenant_id == tenant_id,
+            UserPreference.user_id == user_id,
+        )
+        result = await session.execute(q)
+        prefs = {p.key: p.value for p in result.scalars().all()}
+
+    merged = {**DEFAULT_PREFERENCES, **prefs}
+    return merged
+
+
+@app.put("/api/v1/preferences/{key}")
+async def set_preference(key: str, body: PreferenceUpdate, request: Request):
+    tenant_id = _get_tenant_id(request)
+    user_id = _get_user_id(request)
+    async with app.state.session_factory() as session:
+        q = select(UserPreference).where(
+            UserPreference.tenant_id == tenant_id,
+            UserPreference.user_id == user_id,
+            UserPreference.key == key,
+        )
+        result = await session.execute(q)
+        pref = result.scalar_one_or_none()
+        if pref:
+            pref.value = body.value
+            pref.updated_at = datetime.now(timezone.utc)
+        else:
+            pref = UserPreference(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                key=key,
+                value=body.value,
+            )
+            session.add(pref)
+        await session.commit()
+        return {"key": key, "value": body.value}
+
+
+# ── Reporting / Summary ────────────────────────────────────────────────
+
+@app.get("/api/v1/reports/summary")
+async def report_summary(request: Request, period_days: int = Query(default=30, ge=1, le=365)):
+    tenant_id = _get_tenant_id(request)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=period_days)
+
+    async with app.state.session_factory() as session:
+        # All claims
+        all_q = select(Claim).where(Claim.tenant_id == tenant_id)
+        all_result = await session.execute(all_q)
+        all_claims = all_result.scalars().all()
+
+        # Recent claims (in period)
+        recent = [c for c in all_claims if c.created_at and c.created_at.replace(tzinfo=None) >= cutoff.replace(tzinfo=None)]
+
+        # Appeals in period
+        appeals_q = select(Appeal).where(Appeal.tenant_id == tenant_id)
+        appeals_result = await session.execute(appeals_q)
+        all_appeals = appeals_result.scalars().all()
+        recent_appeals = [a for a in all_appeals if a.created_at and a.created_at.replace(tzinfo=None) >= cutoff.replace(tzinfo=None)]
+
+        # Audit entries in period
+        audit_q = select(func.count()).select_from(AuditLog).where(AuditLog.tenant_id == tenant_id)
+        total_audit = (await session.execute(audit_q)).scalar_one()
+
+    total_denied = sum(c.amount_denied_cents or 0 for c in all_claims)
+    total_recovered = sum(c.amount_denied_cents or 0 for c in all_claims if c.status == "won")
+    period_denied = sum(c.amount_denied_cents or 0 for c in recent)
+    period_recovered = sum(c.amount_denied_cents or 0 for c in recent if c.status == "won")
+
+    status_dist = {}
+    for c in all_claims:
+        status_dist[c.status] = status_dist.get(c.status, 0) + 1
+
+    payer_summary = {}
+    for c in all_claims:
+        name = c.payer_name or "Unknown"
+        if name not in payer_summary:
+            payer_summary[name] = {"claims": 0, "denied_cents": 0, "won": 0}
+        payer_summary[name]["claims"] += 1
+        payer_summary[name]["denied_cents"] += c.amount_denied_cents or 0
+        if c.status == "won":
+            payer_summary[name]["won"] += 1
+
+    denial_code_dist = {}
+    for c in all_claims:
+        code = c.denial_code or "unknown"
+        denial_code_dist[code] = denial_code_dist.get(code, 0) + 1
+
+    top_denial_codes = sorted(denial_code_dist.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    return {
+        "period_days": period_days,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "totals": {
+            "claims": len(all_claims),
+            "denied_cents": total_denied,
+            "recovered_cents": total_recovered,
+            "recovery_rate": round(total_recovered / total_denied * 100, 1) if total_denied > 0 else 0,
+            "appeals": len(all_appeals),
+            "audit_entries": total_audit,
+        },
+        "period": {
+            "new_claims": len(recent),
+            "denied_cents": period_denied,
+            "recovered_cents": period_recovered,
+            "new_appeals": len(recent_appeals),
+        },
+        "status_distribution": status_dist,
+        "top_denial_codes": [{"code": c, "count": n} for c, n in top_denial_codes],
+        "payer_summary": [
+            {
+                "payer": k,
+                "claims": v["claims"],
+                "denied_cents": v["denied_cents"],
+                "won": v["won"],
+                "win_rate": round(v["won"] / v["claims"] * 100, 1) if v["claims"] > 0 else 0,
+            }
+            for k, v in sorted(payer_summary.items(), key=lambda x: x[1]["denied_cents"], reverse=True)
+        ],
+    }

@@ -92,6 +92,31 @@ class ClaimNote(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
 
 
+class ClaimAttachment(Base):
+    __tablename__ = "claim_attachments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    claim_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
+    file_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    uploaded_by: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
+
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    key: Mapped[str] = mapped_column(String(100), nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 

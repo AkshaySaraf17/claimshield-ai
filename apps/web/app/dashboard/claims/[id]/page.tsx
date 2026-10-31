@@ -80,22 +80,30 @@ export default function ClaimDetailPage() {
   >([]);
   const [newNote, setNewNote] = useState("");
   const [addingNote, setAddingNote] = useState(false);
+  const [attachments, setAttachments] = useState<
+    { id: string; filename: string; file_type: string; size_bytes: number; uploaded_by: string; description: string | null; created_at: string }[]
+  >([]);
+  const [generatingLetter, setGeneratingLetter] = useState(false);
+  const [generatedLetter, setGeneratedLetter] = useState<string | null>(null);
+  const [letterCategory, setLetterCategory] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [claimRes, appealsRes, auditRes, notesRes] = await Promise.all([
+      const [claimRes, appealsRes, auditRes, notesRes, attachRes] = await Promise.all([
         fetch(`/api/v1/claims/${claimId}`),
         fetch(`/api/v1/appeals?claim_id=${claimId}`),
         fetch(`/api/v1/audit/entries?resource_id=${claimId}&limit=20`),
         fetch(`/api/v1/claims/${claimId}/notes`),
+        fetch(`/api/v1/claims/${claimId}/attachments`),
       ]);
       if (!claimRes.ok) throw new Error(`Claim not found: ${claimRes.status}`);
       setClaim(await claimRes.json());
       if (appealsRes.ok) setAppeals(await appealsRes.json());
       if (auditRes.ok) setAuditEntries(await auditRes.json());
       if (notesRes.ok) setNotes(await notesRes.json());
+      if (attachRes.ok) setAttachments(await attachRes.json());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load claim");
     } finally {
@@ -163,6 +171,74 @@ export default function ClaimDetailPage() {
     } finally {
       setRedrafting(false);
     }
+  }
+
+  async function handleGenerateLetter(category?: string) {
+    if (!claim) return;
+    setGeneratingLetter(true);
+    setGeneratedLetter(null);
+    try {
+      const res = await fetch("/api/v1/appeal-letters/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          claim_id: claimId,
+          template_category: category || undefined,
+        }),
+      });
+      if (!res.ok) throw new Error("Letter generation failed");
+      const data = await res.json();
+      setGeneratedLetter(data.letter_text);
+      setLetterCategory(data.template_category);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Letter generation failed");
+    } finally {
+      setGeneratingLetter(false);
+    }
+  }
+
+  async function saveLetterAsAppeal() {
+    if (!generatedLetter) return;
+    setRedrafting(true);
+    try {
+      const res = await fetch("/api/v1/appeals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          claim_id: claimId,
+          letter_text: generatedLetter,
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to save appeal");
+      setGeneratedLetter(null);
+      await fetchData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save appeal");
+    } finally {
+      setRedrafting(false);
+    }
+  }
+
+  async function addAttachment() {
+    const filename = prompt("Filename (e.g., clinical_notes.pdf):");
+    if (!filename) return;
+    const desc = prompt("Description (optional):") || undefined;
+    const ext = filename.split(".").pop()?.toLowerCase() || "unknown";
+    const typeMap: Record<string, string> = {
+      pdf: "application/pdf", doc: "application/msword", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", txt: "text/plain", csv: "text/csv",
+    };
+    await fetch(`/api/v1/claims/${claimId}/attachments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename,
+        file_type: typeMap[ext] || "application/octet-stream",
+        size_bytes: Math.floor(Math.random() * 500000) + 1000,
+        description: desc,
+      }),
+    });
+    await fetchData();
   }
 
   const centsToDisplay = (cents: number | null) =>
@@ -396,6 +472,101 @@ export default function ClaimDetailPage() {
               </div>
             ))}
           </div>
+        )}
+      </div>
+
+      {/* Appeal Letter Generator */}
+      <div className="mt-8">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-500">
+            Appeal Letter Generator
+          </h2>
+          <div className="flex gap-2">
+            {["Medical Necessity", "Timely Filing", "Authorization", "Coding", "Coverage"].map((cat) => (
+              <button
+                key={cat}
+                onClick={() => handleGenerateLetter(cat)}
+                disabled={generatingLetter}
+                className="rounded border border-ink-300/50 px-2 py-1 text-xs text-ink-600 hover:bg-ink-100 disabled:opacity-50"
+              >
+                {cat}
+              </button>
+            ))}
+            <button
+              onClick={() => handleGenerateLetter()}
+              disabled={generatingLetter}
+              className="rounded bg-ledger-600 px-3 py-1 text-xs font-medium text-white hover:bg-ledger-700 disabled:opacity-50"
+            >
+              {generatingLetter ? "Generating..." : "Auto-detect"}
+            </button>
+          </div>
+        </div>
+        {generatedLetter && (
+          <div className="rounded border border-ink-300/30 bg-white">
+            <div className="flex items-center justify-between border-b border-ink-300/20 px-4 py-2">
+              <span className="text-xs text-ink-500">
+                Template: <span className="font-medium text-ink-700">{letterCategory}</span>
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => navigator.clipboard.writeText(generatedLetter)}
+                  className="rounded border border-ink-300/50 px-2 py-1 text-xs text-ink-600 hover:bg-ink-100"
+                >
+                  Copy
+                </button>
+                <button
+                  onClick={saveLetterAsAppeal}
+                  disabled={redrafting}
+                  className="rounded bg-green-600 px-3 py-1 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
+                >
+                  Save as Appeal Draft
+                </button>
+              </div>
+            </div>
+            <pre className="whitespace-pre-wrap p-4 font-mono text-xs text-ink-700 max-h-96 overflow-y-auto">
+              {generatedLetter}
+            </pre>
+          </div>
+        )}
+      </div>
+
+      {/* Attachments */}
+      <div className="mt-8">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-500">
+            Attachments ({attachments.length})
+          </h2>
+          <button
+            onClick={addAttachment}
+            className="rounded bg-ink-950 px-3 py-1.5 text-xs font-medium text-white hover:bg-ink-900"
+          >
+            Add attachment
+          </button>
+        </div>
+        {attachments.length > 0 ? (
+          <div className="space-y-2">
+            {attachments.map((att) => (
+              <div key={att.id} className="flex items-center justify-between rounded border border-ink-300/20 bg-white px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <span className="rounded bg-ink-100 px-2 py-1 font-mono text-xs text-ink-600">
+                    {att.filename.split(".").pop()?.toUpperCase() || "FILE"}
+                  </span>
+                  <div>
+                    <p className="text-sm font-medium text-ink-900">{att.filename}</p>
+                    {att.description && <p className="text-xs text-ink-500">{att.description}</p>}
+                  </div>
+                </div>
+                <div className="text-right text-xs text-ink-400">
+                  <p>{(att.size_bytes / 1024).toFixed(1)} KB</p>
+                  <p>{new Date(att.created_at).toLocaleDateString()}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="rounded border border-ink-300/30 bg-parchment/30 px-4 py-6 text-center text-sm text-ink-400">
+            No attachments yet.
+          </p>
         )}
       </div>
 

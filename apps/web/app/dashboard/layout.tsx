@@ -12,8 +12,10 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard/deadlines", label: "Deadlines" },
   { href: "/dashboard/analytics", label: "Analytics" },
   { href: "/dashboard/denial-codes", label: "Codes" },
+  { href: "/dashboard/reports", label: "Reports" },
   { href: "/dashboard/import", label: "Import" },
   { href: "/dashboard/audit", label: "Audit Log" },
+  { href: "/dashboard/settings", label: "Settings" },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
