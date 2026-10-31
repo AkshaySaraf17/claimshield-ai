@@ -86,6 +86,9 @@ export default function ClaimDetailPage() {
   const [generatingLetter, setGeneratingLetter] = useState(false);
   const [generatedLetter, setGeneratedLetter] = useState<string | null>(null);
   const [letterCategory, setLetterCategory] = useState<string | null>(null);
+  const [timeline, setTimeline] = useState<
+    { type: string; timestamp: string; title: string; detail: string }[]
+  >([]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -104,6 +107,8 @@ export default function ClaimDetailPage() {
       if (auditRes.ok) setAuditEntries(await auditRes.json());
       if (notesRes.ok) setNotes(await notesRes.json());
       if (attachRes.ok) setAttachments(await attachRes.json());
+      const timelineRes = await fetch(`/api/v1/claims/${claimId}/timeline`);
+      if (timelineRes.ok) setTimeline(await timelineRes.json());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load claim");
     } finally {
@@ -570,24 +575,34 @@ export default function ClaimDetailPage() {
         )}
       </div>
 
-      {/* Audit trail for this claim */}
-      {auditEntries.length > 0 && (
+      {/* Timeline */}
+      {timeline.length > 0 && (
         <div className="mt-8">
           <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-ink-500">
-            Activity log
+            Claim Timeline
           </h2>
-          <div className="space-y-1">
-            {auditEntries.map((entry) => (
-              <div key={entry.id} className="flex items-center gap-3 rounded px-3 py-2 text-xs hover:bg-parchment/30">
-                <span className="rounded bg-indigo-100 px-1.5 py-0.5 font-medium text-indigo-700">
-                  {entry.action}
-                </span>
-                <span className="text-ink-500">by {entry.actor_id}</span>
-                <span className="ml-auto text-ink-400">
-                  {entry.created_at ? new Date(entry.created_at).toLocaleString() : ""}
-                </span>
-              </div>
-            ))}
+          <div className="relative border-l-2 border-ink-200 pl-6 space-y-4">
+            {timeline.map((evt, i) => {
+              const dotColor =
+                evt.type === "claim_created" ? "bg-blue-500" :
+                evt.type === "appeal_created" ? "bg-purple-500" :
+                evt.type === "appeal_approved" ? "bg-green-500" :
+                evt.type === "note" ? "bg-amber-500" :
+                evt.type === "deadline" ? "bg-red-500" :
+                "bg-ink-400";
+              return (
+                <div key={i} className="relative">
+                  <div className={`absolute -left-8 top-1.5 h-3 w-3 rounded-full ${dotColor}`} />
+                  <div className="text-sm">
+                    <p className="font-medium text-ink-900">{evt.title}</p>
+                    <p className="text-xs text-ink-500">{evt.detail}</p>
+                    <p className="mt-0.5 text-[10px] text-ink-400">
+                      {new Date(evt.timestamp).toLocaleString()}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

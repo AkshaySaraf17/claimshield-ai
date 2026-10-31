@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Query, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -1187,6 +1188,87 @@ async def generate_appeal_letter(body: GenerateLetterRequest, request: Request):
         "source": APPEAL_TEMPLATES.get(category, {}).get("source", "N/A"),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ── Claim Timeline ────────────────────────────────────────────────────
+
+@app.get("/api/v1/claims/{claim_id}/timeline")
+async def claim_timeline(claim_id: str, request: Request):
+    tenant_id = _get_tenant_id(request)
+    async with app.state.session_factory() as session:
+        claim = await session.get(Claim, claim_id)
+        if not claim or claim.tenant_id != tenant_id:
+            return JSONResponse({"detail": "Claim not found"}, status_code=404)
+
+        events: list[dict] = []
+
+        events.append({
+            "type": "claim_created",
+            "timestamp": claim.created_at.isoformat(),
+            "title": "Claim created",
+            "detail": f"Claim {claim.claim_number or claim_id[:8]} created — {claim.payer_name}, {claim.denial_code}",
+        })
+
+        audit_q = select(AuditLog).where(
+            AuditLog.tenant_id == tenant_id,
+            AuditLog.resource_id == claim_id,
+        ).order_by(AuditLog.created_at)
+        audit_result = await session.execute(audit_q)
+        for log in audit_result.scalars().all():
+            events.append({
+                "type": "audit",
+                "timestamp": log.created_at.isoformat(),
+                "title": log.action.replace(".", " ").replace("_", " ").title(),
+                "detail": f"By {log.actor_id}",
+                "action": log.action,
+            })
+
+        appeals_q = select(Appeal).where(
+            Appeal.tenant_id == tenant_id,
+            Appeal.claim_id == claim_id,
+        ).order_by(Appeal.created_at)
+        appeals_result = await session.execute(appeals_q)
+        for ap in appeals_result.scalars().all():
+            events.append({
+                "type": "appeal_created",
+                "timestamp": ap.created_at.isoformat(),
+                "title": f"Appeal draft v{ap.version}",
+                "detail": f"Confidence: {ap.confidence:.0%}" if ap.confidence else "No confidence score",
+                "appeal_id": ap.id,
+            })
+            if ap.approved_by:
+                events.append({
+                    "type": "appeal_approved",
+                    "timestamp": (ap.approved_at or ap.created_at).isoformat(),
+                    "title": "Appeal approved",
+                    "detail": f"Approved by {ap.approved_by}",
+                    "appeal_id": ap.id,
+                })
+
+        notes_q = select(ClaimNote).where(
+            ClaimNote.tenant_id == tenant_id,
+            ClaimNote.claim_id == claim_id,
+        ).order_by(ClaimNote.created_at)
+        notes_result = await session.execute(notes_q)
+        for note in notes_result.scalars().all():
+            events.append({
+                "type": "note",
+                "timestamp": note.created_at.isoformat(),
+                "title": "Note added",
+                "detail": note.body[:120] + ("..." if len(note.body) > 120 else ""),
+                "author": note.author_id,
+            })
+
+        if claim.filing_deadline:
+            events.append({
+                "type": "deadline",
+                "timestamp": claim.filing_deadline.isoformat(),
+                "title": "Filing deadline",
+                "detail": f"Deadline for {claim.payer_name}",
+            })
+
+    events.sort(key=lambda e: e["timestamp"])
+    return events
 
 
 class BatchAppealRequest(BaseModel):
