@@ -85,6 +85,8 @@ function ResultPanel({
   approving,
   approveError,
   approved,
+  claimId,
+  appealId,
 }: {
   result: PipelineResult;
   onEditAppeal: (text: string) => void;
@@ -92,6 +94,8 @@ function ResultPanel({
   approving: boolean;
   approveError: string | null;
   approved: boolean;
+  claimId: string | null;
+  appealId: string | null;
 }) {
   const ds = result.denial_summary;
   const amountDisplay = ds.amount_denied_cents !== null
@@ -173,6 +177,17 @@ function ResultPanel({
         <p className="rounded-sm bg-denial-50 p-3 text-sm text-denial-600">{approveError}</p>
       )}
 
+      {claimId && (
+        <div className="animate-entrance rounded-sm border border-ink-300/30 bg-parchment/30 px-4 py-2 text-xs text-ink-500">
+          Saved as claim <span className="font-mono">{claimId.slice(0, 8)}</span>
+          {appealId && <> with appeal draft <span className="font-mono">{appealId.slice(0, 8)}</span></>}
+          {" — visible in "}
+          <a href="/dashboard/claims" className="underline hover:text-ink-700">Claims</a>
+          {" and "}
+          <a href="/dashboard/audit" className="underline hover:text-ink-700">Audit Log</a>
+        </div>
+      )}
+
       <p className="text-xs text-ink-400">
         Approval is server-enforced — only authorized roles (biller, clinic admin, physician reviewer)
         can approve. Nothing is sent without approval.
@@ -191,6 +206,8 @@ export default function AppealWorkbench() {
   const [approving, setApproving] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
   const [approved, setApproved] = useState(false);
+  const [claimId, setClaimId] = useState<string | null>(null);
+  const [appealId, setAppealId] = useState<string | null>(null);
 
   const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -201,6 +218,8 @@ export default function AppealWorkbench() {
     setResult(null);
     setApproved(false);
     setApproveError(null);
+    setClaimId(null);
+    setAppealId(null);
 
     try {
       // Try the new pipeline API first, fall back to legacy backend
@@ -224,12 +243,12 @@ export default function AppealWorkbench() {
 
       const data = await res.json();
 
-      // Normalize response shape (handle both old and new API formats)
+      // Normalize response shape
+      let pipelineResult: PipelineResult;
       if (data.denial_summary && "parser_confidence" in data.denial_summary) {
-        setResult(data as PipelineResult);
+        pipelineResult = data as PipelineResult;
       } else {
-        // Legacy format adaptation
-        setResult({
+        pipelineResult = {
           status: data.status || "completed",
           denial_summary: {
             denial_code: data.denial_summary?.denial_code || null,
@@ -246,7 +265,45 @@ export default function AppealWorkbench() {
           generated_appeal: data.generated_appeal || null,
           writer_confidence: null,
           needs_human_review: true,
+        };
+      }
+      setResult(pipelineResult);
+
+      // Save claim + appeal draft to the database
+      try {
+        const ds = pipelineResult.denial_summary;
+        const claimRes = await fetch("/api/v1/claims", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            payer_name: ds.payer_name,
+            denial_code: ds.denial_code,
+            denial_reason: ds.denial_reason,
+            raw_denial_text: denialText,
+            raw_clinical_notes: clinicalNotes,
+            amount_denied_cents: ds.amount_denied_cents,
+          }),
         });
+        if (claimRes.ok) {
+          const claim = await claimRes.json();
+          setClaimId(claim.id);
+
+          const appealRes = await fetch("/api/v1/appeals", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              claim_id: claim.id,
+              letter_text: pipelineResult.generated_appeal,
+              confidence: pipelineResult.writer_confidence,
+            }),
+          });
+          if (appealRes.ok) {
+            const appeal = await appealRes.json();
+            setAppealId(appeal.id);
+          }
+        }
+      } catch {
+        // Non-blocking — pipeline result still shows even if save fails
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -260,37 +317,15 @@ export default function AppealWorkbench() {
     setApproveError(null);
 
     try {
-      // In full flow: create appeal via appeals service, then approve it
-      // For now, show the server-enforced approval concept
-      if (!apiBase) {
-        // No API configured — show that approval would go through the server
-        setApproved(true);
-        return;
+      if (!appealId) {
+        throw new Error("No appeal draft to approve — generate an appeal first");
       }
 
-      // Create the appeal draft
-      const createRes = await authFetch(`${apiBase}/api/v1/appeals`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          claim_id: "00000000-0000-0000-0000-000000000000", // placeholder
-          letter_text: result?.generated_appeal,
-          confidence: result?.writer_confidence,
-        }),
-      });
-
-      if (!createRes.ok) {
-        throw new Error("Failed to create appeal draft");
-      }
-
-      const appeal = await createRes.json();
-
-      // Approve it (server checks role)
-      const approveRes = await authFetch(`${apiBase}/api/v1/appeals/${appeal.id}/approve`, {
+      const approveRes = await fetch(`/api/v1/appeals/${appealId}/approve`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          approved_by: user?.name || user?.sub || "unknown",
+          approved_by: user?.name || user?.sub || "dev-biller",
         }),
       });
 
@@ -300,6 +335,15 @@ export default function AppealWorkbench() {
       }
 
       setApproved(true);
+
+      // Also transition the claim to in_progress
+      if (claimId) {
+        await fetch(`/api/v1/claims/${claimId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "in_progress" }),
+        }).catch(() => {});
+      }
     } catch (err) {
       setApproveError(err instanceof Error ? err.message : "Approval failed");
     } finally {
@@ -387,6 +431,8 @@ export default function AppealWorkbench() {
               approving={approving}
               approveError={approveError}
               approved={approved}
+              claimId={claimId}
+              appealId={appealId}
             />
           )}
         </AnimatePresence>

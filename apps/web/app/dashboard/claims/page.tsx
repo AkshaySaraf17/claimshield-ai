@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "../../components/AuthProvider";
 import { authFetch } from "../../lib/auth";
 
@@ -29,6 +30,7 @@ const STATUS_COLORS: Record<string, string> = {
 
 export default function ClaimsListPage() {
   const { user } = useAuth();
+  const router = useRouter();
   const [claims, setClaims] = useState<Claim[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -135,7 +137,7 @@ export default function ClaimsListPage() {
               </tr>
             ) : (
               claims.map((claim) => (
-                <tr key={claim.id} className="border-t border-ink-300/20 hover:bg-parchment/30">
+                <tr key={claim.id} onClick={() => router.push(`/dashboard/claims/${claim.id}`)} className="cursor-pointer border-t border-ink-300/20 hover:bg-parchment/30">
                   <td className="px-4 py-2 font-mono text-xs">
                     {claim.claim_number || claim.id.slice(0, 8)}
                   </td>
