@@ -87,6 +87,8 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard/csv-export", label: "CSV" },
   { href: "/dashboard/bulk-import", label: "Import+" },
   { href: "/dashboard/claim-compare", label: "Diff" },
+  { href: "/dashboard/auto-router", label: "Router" },
+  { href: "/dashboard/payer-perf", label: "Payer$" },
   { href: "/dashboard/audit", label: "Audit Log" },
   { href: "/dashboard/settings", label: "Settings" },
 ];
