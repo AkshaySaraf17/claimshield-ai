@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { AuthProvider } from "./components/AuthProvider";
+import SessionWrapper from "./components/SessionWrapper";
 
 export const metadata: Metadata = {
   title: "ClaimShield AI",
@@ -15,7 +15,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="min-h-screen text-slate-900 antialiased">
-        <AuthProvider>{children}</AuthProvider>
+        <SessionWrapper>{children}</SessionWrapper>
       </body>
     </html>
   );

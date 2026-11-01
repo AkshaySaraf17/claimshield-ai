@@ -62,3 +62,19 @@ body {
   pointer-events: none;
   position: absolute;
 }
+
+/* Thin scrollbar for sidebar */
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: #a4b2bd transparent;
+}
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: #a4b2bd;
+  border-radius: 2px;
+}
