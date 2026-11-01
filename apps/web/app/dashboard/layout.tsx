@@ -75,6 +75,9 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard/status-history", label: "History" },
   { href: "/dashboard/claim-links", label: "Links" },
   { href: "/dashboard/cost-manager", label: "Costs+" },
+  { href: "/dashboard/prevention-tips", label: "Tips" },
+  { href: "/dashboard/appeal-preview", label: "Preview" },
+  { href: "/dashboard/cost-summary", label: "Cost $" },
   { href: "/dashboard/audit", label: "Audit Log" },
   { href: "/dashboard/settings", label: "Settings" },
 ];
