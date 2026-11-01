@@ -72,6 +72,9 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard/comments", label: "Comments" },
   { href: "/dashboard/letter-history", label: "Letters" },
   { href: "/dashboard/predictor", label: "Predict" },
+  { href: "/dashboard/status-history", label: "History" },
+  { href: "/dashboard/claim-links", label: "Links" },
+  { href: "/dashboard/cost-manager", label: "Costs+" },
   { href: "/dashboard/audit", label: "Audit Log" },
   { href: "/dashboard/settings", label: "Settings" },
 ];
