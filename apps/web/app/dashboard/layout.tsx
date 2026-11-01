@@ -9,7 +9,7 @@ import {
   BarChart3, DollarSign, Users, Building2, ShieldCheck,
   Settings, Bell, ChevronDown, ChevronRight, Menu, X,
   LogOut, BookOpen, Clock, AlertTriangle, TrendingUp,
-  Layers, FolderOpen, Zap, Eye, Printer, Import,
+  Layers, FolderOpen, Zap, Eye, Printer, Import, Upload,
 } from "lucide-react";
 
 interface NavSection {
@@ -141,6 +141,14 @@ const NAV_SECTIONS: NavSection[] = [
       { href: "/dashboard/report-text", label: "Summary Report" },
       { href: "/dashboard/exports", label: "Exports" },
       { href: "/dashboard/csv-export", label: "CSV Export" },
+    ],
+  },
+  {
+    label: "Documents",
+    icon: <Upload size={18} />,
+    items: [
+      { href: "/dashboard/upload", label: "Upload Document" },
+      { href: "/dashboard/attachments", label: "All Documents" },
     ],
   },
   {
