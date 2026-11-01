@@ -78,6 +78,9 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard/prevention-tips", label: "Tips" },
   { href: "/dashboard/appeal-preview", label: "Preview" },
   { href: "/dashboard/cost-summary", label: "Cost $" },
+  { href: "/dashboard/code-analytics", label: "Code $" },
+  { href: "/dashboard/report-text", label: "Report" },
+  { href: "/dashboard/notif-prefs", label: "Notif" },
   { href: "/dashboard/audit", label: "Audit Log" },
   { href: "/dashboard/settings", label: "Settings" },
 ];
