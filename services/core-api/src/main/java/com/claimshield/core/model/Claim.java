@@ -38,8 +38,23 @@ public class Claim {
     @Column(name = "amount_recovered_cents")
     private Long amountRecoveredCents;
 
+    @Column(name = "amount_approved_cents")
+    private Long amountApprovedCents;
+
+    @Column(name = "raw_denial_text", columnDefinition = "TEXT")
+    private String rawDenialText;
+
+    @Column(name = "raw_clinical_notes", columnDefinition = "TEXT")
+    private String rawClinicalNotes;
+
     @Column(nullable = false, length = 30)
     private String status = "pending_review";
+
+    @Column(name = "reviewed_by")
+    private String reviewedBy;
+
+    @Column(name = "reviewed_at")
+    private LocalDateTime reviewedAt;
 
     @Column(name = "date_of_service")
     private LocalDateTime dateOfService;
@@ -139,4 +154,19 @@ public class Claim {
 
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+
+    public Long getAmountApprovedCents() { return amountApprovedCents; }
+    public void setAmountApprovedCents(Long amountApprovedCents) { this.amountApprovedCents = amountApprovedCents; }
+
+    public String getRawDenialText() { return rawDenialText; }
+    public void setRawDenialText(String rawDenialText) { this.rawDenialText = rawDenialText; }
+
+    public String getRawClinicalNotes() { return rawClinicalNotes; }
+    public void setRawClinicalNotes(String rawClinicalNotes) { this.rawClinicalNotes = rawClinicalNotes; }
+
+    public String getReviewedBy() { return reviewedBy; }
+    public void setReviewedBy(String reviewedBy) { this.reviewedBy = reviewedBy; }
+
+    public LocalDateTime getReviewedAt() { return reviewedAt; }
+    public void setReviewedAt(LocalDateTime reviewedAt) { this.reviewedAt = reviewedAt; }
 }
