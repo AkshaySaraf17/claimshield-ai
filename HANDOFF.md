@@ -1,5 +1,5 @@
 # Handoff
-Last updated: 2026-11-01 | Branch: main | Last commit: e88847e (PRs #1 and #2 merged)
+Last updated: 2026-11-01 | Branch: phase7/rules-engine-java | Last commit: rules engine ported to Java
 
 ## Project summary
 ClaimShield AI is a healthcare claims denial management platform with 92 dashboard pages (Next.js 15, port 3000), a Java Spring Boot core-api (port 8080) with 15 entities, 17 controllers, and ~75 endpoints, Java analytics-service (8081) and workflow-service (8082), and a Python AI/ML agent service (port 8001, not migrating). The Python FastAPI dev_server (port 8003) was removed in Phase 5. Monorepo: `apps/web/` (frontend), `services/core-api/`, `services/analytics-service/`, `services/workflow-service/` (Java), `services/agent_service/` (Python AI, stays).
@@ -86,6 +86,15 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 
 **Step 13 (suggested): dev console warnings** — missing list `key` props in `dashboard/code-lookup`, `letter-history`, `roles`; a `NaN` rendered as text (seen during the page sweep)
 
+**Phase 7 — remaining Python backend → Java.** User direction (2026-11-01): *microservices and the core backend in Java; pipelines, data engineering, AI/ML and analytics stay in Python.* Stays Python: `services/agents` (AI pipeline), `services/policy` (embeddings/RAG search, AI), `backend/` (older AI pipeline copy, unused — left alone), `packages/py-common` while Python services use it. Interpretation recorded: "analytics" = analytics *pipelines*; the Java analytics-service (dashboard reporting API) stays Java — confirm with user if unsure
+
+**Step 14: Port rules engine into core-api** — DONE (branch `phase7/rules-engine-java`). `RulesEngineService` + `RulesEngineController` at `POST /api/v1/rules/check` (same contract as Python). Agent pipeline's `rules_engine_url` default → `http://localhost:8080`; compose agents → `http://core-api:8080`. `services/rules_engine/` and `tests/test_rules_engine.py` deleted
+
+**Step 15: Retire Python claims/appeals/audit microservices** — NEXT. No runtime callers (frontend and agents use Java core-api). For each: check every Python endpoint/behaviour has a Java equivalent, port its Python tests to Java (notably `test_edi835.py`, 28 tests, against `Edi835ParserService`; `test_audit_hasher.py`; `test_claims_schemas.py` status machine; `test_appeals_schemas.py`), then delete the service + tests and update CI (`pip install -e services/audit`, `ruff check ... services/audit/`), `infra/compose/*.yml`, `apisix` routes, SETUP.md, STATUS.md
+- Done when: no `services/{claims,appeals,audit}` left, ported tests pass in Java, CI green
+
+**Open question for the user — conflicting filing-day tables:** core-api `ReferenceDataService.PAYER_FILING_DAYS` (used for claim `filing_deadline`) says Medicare **120** days, default 90; the rules engine's `TIMELY_FILING_DAYS` says Medicare **365** (matches its cited source, 42 CFR § 424.44: 12 months), default 180. Several other payers differ too. Not changed — pick one table as the source of truth
+
 ## How to verify
 
 ```bash
@@ -116,6 +125,15 @@ cd apps/web && npm run dev  # port 3000
 ```
 
 ## History log
+
+### 2026-11-01 — Step 14: rules engine ported from Python to Java (core-api)
+- `services/core-api/.../service/RulesEngineService.java`: same rules, tables, messages and `source` citations as `services/rules_engine/app/rules.py` (timely filing, denial-code validation, CCI bundling); `today` is a parameter for testability
+- `.../controller/RulesEngineController.java`: `POST /api/v1/rules/check`, request `{payer_name, denial_code, date_of_service, primary_cpt, secondary_cpts}`, response `{results:[{rule_id, passed, severity, message, source, details}], has_blockers}`
+- Tests: `RulesEngineServiceTest` (one-to-one port of the 10 Python tests) + `RulesEngineApiTest` (3: agent's request shape, expired filing = blocker, empty request) → core-api 31 tests
+- **Parity proven:** Python and Java engines run side by side on 2,400 input combinations (payers incl. unknown/blank/odd spacing, codes incl. lowercase/padded/missing, dates across BLOCK/WARN/INFO, CPT bundles) → 0 differences in the JSON
+- **Agent wiring proven:** ran the agent's real `rule_checker_agent` against Java with the Python engine stopped → real results with sources. Important because `rule_checker_agent` swallows errors (returns no rules) — a wrong URL fails silently
+- Fixed while repointing: agent default `rules_engine_url` was `http://localhost:8000` (nothing there; Python engine ran on 8002) → now core-api `:8080`. Compose gave web `AGENT_PIPELINE_URL` but the code reads `AGENT_SERVICE_URL` → renamed (workbench would have failed in Docker)
+- Deleted `services/rules_engine/` and `tests/test_rules_engine.py`; Python tests 103 → 93; SETUP.md (start Java first), STATUS.md updated
 
 ### 2026-11-01 — PRs #1 and #2 merged; post-merge recheck on `main` (e88847e)
 - CI on `main` (push run 41387643708): all 7 jobs green — first green CI in the repo's history
