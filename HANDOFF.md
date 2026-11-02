@@ -1,5 +1,5 @@
 # Handoff
-Last updated: 2026-11-01 | Branch: phase6/java-contract-tests (stacked on phase5/java-api-parity) | Last commit: Java tests in CI
+Last updated: 2026-11-01 | Branch: main | Last commit: e88847e (PRs #1 and #2 merged)
 
 ## Project summary
 ClaimShield AI is a healthcare claims denial management platform with 92 dashboard pages (Next.js 15, port 3000), a Java Spring Boot core-api (port 8080) with 15 entities, 17 controllers, and ~75 endpoints, Java analytics-service (8081) and workflow-service (8082), and a Python AI/ML agent service (port 8001, not migrating). The Python FastAPI dev_server (port 8003) was removed in Phase 5. Monorepo: `apps/web/` (frontend), `services/core-api/`, `services/analytics-service/`, `services/workflow-service/` (Java), `services/agent_service/` (Python AI, stays).
@@ -39,7 +39,7 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 - **Phases 1–3 COMPLETE** (see History log)
 - **Phase 4 was NOT actually complete when last handed off — fixed this session.** A static cross-check of every `fetch()` in `apps/web/app/api/**/route.ts` against every Java `@*Mapping` found 29 proxy routes calling paths that did not exist in any Java service, and all Java responses were camelCase while the 92 dashboard pages read snake_case keys (136 uses of `denial_code`/`amount_denied_cents`/etc., zero camelCase). Details in the 2026-11-01 "Phase 4 gap fixes" history entry
 - **Phase 5 COMPLETE (code)** — `services/dev_server/` deleted; docs and docker-compose updated
-- Committed and pushed on `phase5/java-api-parity`; PR open against main
+- Everything is merged into `main` (PR #1 Phase 4/5 fixes, PR #2 Java tests + CI). CI on `main` is green: all 7 jobs (frontend, Python lint, Python tests, security, 3× Java tests)
 - No files are half-written; all three Java services build and run together
 
 ### Broken or blocked
@@ -72,7 +72,7 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 
 **Step 6: Decommission Python dev_server — Phase 5** — DONE (code). Verified: with nothing on port 8003, all 76 GET proxy routes return 200 through Next.js (`localhost:3000/api/v1/...`)
 
-**Step 7: Commit and push branch `phase5/java-api-parity`, open PR** — DONE; next: review and merge the PR
+**Step 7: Commit and push branch `phase5/java-api-parity`, open PR** — DONE; merged as PR #1 (e88847e)
 
 **Step 8: Verify Docker compose stack** — DONE. All 3 images build from their Dockerfiles; run as containers on one network with a shared `/app/data` volume they start cleanly and share the H2 file (analytics `/api/v1/stats` shows core-api's 10 seeded claims; core-api auto-route reads workflow-service's `routing_rules`). Checked with `docker run` on host ports 18080-18082 because host 8080 was taken by another local project; the compose file itself was only validated with `docker-compose config`, not `up`
 
@@ -80,7 +80,7 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 
 **Step 10: Role check on appeal approval** — DONE. `/api/v1/appeals/{id}/approve` returns 403 unless `X-User-Roles` contains reviewer, manager or admin; `approved_by` is always the authenticated caller (request-body value ignored). Proxy routes now forward the real NextAuth session identity (`apps/web/app/lib/identity.ts`) instead of the hardcoded dev-user-001/biller. "Dev Login as Reviewer" (dev-user-003, role reviewer) added to `/login`
 
-**Step 11: Java contract test suite — Phase 6** — DONE on branch `phase6/java-contract-tests` (stacked on PR #1's branch). 23 tests: core-api 18 (`AppealApprovalTest`, `AuditChainTest`, `AutoRouteTest`, `BatchAndMergeTest`, `ClaimJsonContractTest`, `ResponseShapeTest`), analytics-service 2 (`AnalyticsContractTest`), workflow-service 3 (`WorkflowContractTest`)
+**Step 11: Java contract test suite — Phase 6** — DONE; merged via PR #2 (into PR #1's branch, then `main`). 23 tests: core-api 18 (`AppealApprovalTest`, `AuditChainTest`, `AutoRouteTest`, `BatchAndMergeTest`, `ClaimJsonContractTest`, `ResponseShapeTest`), analytics-service 2 (`AnalyticsContractTest`), workflow-service 3 (`WorkflowContractTest`)
 
 **Step 12: Run Java tests in CI** — DONE. `.github/workflows/ci.yml` has a `java-test` job (matrix over core-api, analytics-service, workflow-service; Temurin 17; `mvn -B test`). CI now runs on every PR (not only PRs into `main`) so stacked PRs like #2 are checked. Frontend job now runs `npm run lint` instead of the deprecated `next lint`. Pushing workflow changes needed the GitHub `workflow` scope (granted 2026-11-01 via `gh auth refresh -s workflow`)
 
@@ -116,6 +116,12 @@ cd apps/web && npm run dev  # port 3000
 ```
 
 ## History log
+
+### 2026-11-01 — PRs #1 and #2 merged; post-merge recheck on `main` (e88847e)
+- CI on `main` (push run 41387643708): all 7 jobs green — first green CI in the repo's history
+- Locally on `main`: Java 23/23 (core-api 18, analytics 2, workflow 3), Python 103/103, ruff check + format clean, ESLint 0 errors, `tsc` clean
+- Live site (Java services rebuilt from `main`, fresh DB): 36/36 signed-in write replays with data read back, 76/76 GET proxy routes, anonymous write → 401, 94/94 dashboard pages render with no runtime errors, home-page navigation while GSAP-pinned → no `removeChild` error
+- Next: Step 13 (dev console warnings) is the only open item
 
 ### 2026-11-01 — Phase 6: Java contract tests (branch phase6/java-contract-tests)
 - **Why:** the 3 Java services had zero tests; every bug fixed this session was a frontend↔Java contract mismatch (field names, missing keys, response shapes) that a test would have caught
