@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-const WORKFLOW_SERVICE_URL = process.env.WORKFLOW_SERVICE_URL || "http://localhost:8082";
+const JAVA_API_URL = process.env.JAVA_API_URL || "http://localhost:8080";
 const DEV_HEADERS: Record<string, string> = {
   "X-Tenant-Id": "00000000-0000-0000-0000-000000000001",
   "X-User-Id": "dev-user-001",
@@ -9,7 +9,7 @@ const DEV_HEADERS: Record<string, string> = {
 
 export async function GET() {
   try {
-    const resp = await fetch(`${WORKFLOW_SERVICE_URL}/api/v1/exports`, {
+    const resp = await fetch(`${JAVA_API_URL}/api/v1/exports`, {
       headers: DEV_HEADERS,
     });
     const data = await resp.json();

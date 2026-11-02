@@ -12,4 +12,5 @@ public interface AppealRepository extends JpaRepository<Appeal, String> {
     List<Appeal> findByClaimIdOrderByCreatedAtDesc(String claimId);
     List<Appeal> findByTenantIdAndStatus(String tenantId, String status);
     long countByTenantIdAndStatus(String tenantId, String status);
+    List<Appeal> findByTenantIdAndClaimIdOrderByVersionAsc(String tenantId, String claimId);
 }

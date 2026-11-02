@@ -3,7 +3,7 @@ spring:
     name: claimshield-core-api
 
   datasource:
-    url: jdbc:h2:file:./data/claimshield;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    url: jdbc:h2:file:./data/claimshield;DB_CLOSE_DELAY=-1;AUTO_SERVER=TRUE
     driver-class-name: org.h2.Driver
     username: sa
     password:
@@ -21,6 +21,10 @@ spring:
       hibernate:
         format_sql: true
         dialect: org.hibernate.dialect.H2Dialect
+
+  # Frontend contract uses snake_case JSON (ported from Python dev_server)
+  jackson:
+    property-naming-strategy: SNAKE_CASE
 
   servlet:
     multipart:

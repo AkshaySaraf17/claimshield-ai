@@ -1,19 +1,19 @@
 # Handoff
-Last updated: 2026-11-01 | Branch: main | Last commit: pending (Phase 3)
+Last updated: 2026-11-01 | Branch: phase5/java-api-parity | Last commit: Phase 4 gap fixes + Phase 5 (this branch)
 
 ## Project summary
-ClaimShield AI is a healthcare claims denial management platform with 92 dashboard pages (Next.js 15, port 3000), a Java Spring Boot core-api (port 8080) with 15 entities, 14 controllers, and ~50 endpoints, a Python FastAPI monolith being replaced (port 8003), and a Python AI/ML agent service (port 8001, not migrating). Monorepo: `apps/web/` (frontend), `services/core-api/` (Java), `services/dev_server/` (Python, being replaced), `services/agent_service/` (Python AI, stays).
+ClaimShield AI is a healthcare claims denial management platform with 92 dashboard pages (Next.js 15, port 3000), a Java Spring Boot core-api (port 8080) with 15 entities, 17 controllers, and ~75 endpoints, Java analytics-service (8081) and workflow-service (8082), and a Python AI/ML agent service (port 8001, not migrating). The Python FastAPI dev_server (port 8003) was removed in Phase 5. Monorepo: `apps/web/` (frontend), `services/core-api/`, `services/analytics-service/`, `services/workflow-service/` (Java), `services/agent_service/` (Python AI, stays).
 
 ## Current state
 
 ### Done and working
 - **92 Next.js dashboard pages** with collapsible sidebar nav, Google OAuth + admin + dev login via NextAuth
-- **Python dev_server** (`services/dev_server/main.py`): 5358 lines, 125 endpoints — fully functional, still serves 99 frontend proxy routes on port 8003
+- **Python dev_server: REMOVED (Phase 5).** Original source is in git history at commit `0363fbb` (`git show 0363fbb:services/dev_server/main.py`)
 - **Java analytics-service** (`services/analytics-service/`, port 8081): Spring Boot 3.2.5, read-only analytics — 10 model classes (copied from core-api), 7 repositories, 6 controllers, 25 GET endpoints covering stats, payer analytics, denial patterns, financials, team performance, reports, SLA, appeal effectiveness
 - **Java core-api** (`services/core-api/`, port 8080): Spring Boot 3.2.5, Java 17, H2 file DB — **massively expanded this session**:
   - **15 JPA entities** (4 original + 11 new): Claim, Appeal, AuditLog, Document, Tenant, Clinic, ClaimNote, ClaimComment, ClaimAttachment, ClaimTag, ClaimAssignment, ClaimCost, ClaimLink, PayerResponse, ClaimStatusHistory
   - **15 Spring Data JPA repositories** (4 original + 11 new) — all at `services/core-api/src/main/java/com/claimshield/core/repository/`
-  - **13 REST controllers** (4 original + 9 new):
+  - **17 REST controllers** (4 original + 9 new + TagController, WorkspaceController added in Phase 4 gap fixes; see History log):
     - `ClaimController` — expanded with: search, status transitions with ALLOWED_TRANSITIONS validation (409 on invalid), status-history, timeline, workqueue with urgency scoring, deadlines, batch-transition, duplicates detection, appeal letter generation + batch generation
     - `AppealController` — list, create, approve, send, by-claim
     - `AuditController` — list, by-resource
@@ -36,15 +36,17 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
   - ~50 endpoints total in core-api
 
 ### In progress
-- **Phase 1 COMPLETE** — all entities, controllers, services, EDI parser, and claim operations ported to Java
-- **Phase 2 COMPLETE** — workflow-service (port 8082) created with 8 entities, 8 repositories, 8 controllers, ~25 endpoints, seed data
-- **Phase 3 COMPLETE** — analytics-service (port 8081) created with 10 model copies, 7 repositories, 6 controllers, 25 GET endpoints
-- **Phase 4 COMPLETE** — all 101 frontend proxy routes updated: 56 → core-api (8080), 25 → analytics-service (8081), 20 → workflow-service (8082)
-- **Phase 5 next** — decommission Python dev_server (no longer needed for any frontend routes)
-- No files are half-written; everything compiles and runs
+- **Phases 1–3 COMPLETE** (see History log)
+- **Phase 4 was NOT actually complete when last handed off — fixed this session.** A static cross-check of every `fetch()` in `apps/web/app/api/**/route.ts` against every Java `@*Mapping` found 29 proxy routes calling paths that did not exist in any Java service, and all Java responses were camelCase while the 92 dashboard pages read snake_case keys (136 uses of `denial_code`/`amount_denied_cents`/etc., zero camelCase). Details in the 2026-11-01 "Phase 4 gap fixes" history entry
+- **Phase 5 COMPLETE (code)** — `services/dev_server/` deleted; docs and docker-compose updated
+- Committed and pushed on `phase5/java-api-parity`; PR open against main
+- No files are half-written; all three Java services build and run together
 
 ### Broken or blocked
-- Nothing is broken. Java and Python servers coexist. The 99 frontend routes still go to Python.
+- **Unverified:** new Dockerfiles (`services/{core-api,analytics-service,workflow-service}/Dockerfile`) and the `docker-compose.dev.yml` changes. Docker (colima) daemon was not running, so no image was built. Sharing one H2 file across containers via a volume + `AUTO_SERVER=TRUE` is plausible but untested
+- **Unverified:** response shapes were matched to the Python source by reading it, and every GET route returns 200 with snake_case keys, but pages were not clicked through one by one. Only `/dashboard/workqueue` was visually checked (renders claims correctly)
+- **Known gap (pre-existing):** appeal `/approve` does not check the caller's role (Python dev_server didn't either). The constraint "server-enforced human approval" is met for send (409 unless approved) but anyone with a user header can approve
+- **Known gap (pre-existing):** `ReferenceDataService.generateAppealLetter` uses `getOrDefault` on a map that contains null values, so missing fields print as "null" in letters instead of the default text
 
 ## Key decisions and context
 
@@ -69,9 +71,17 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 
 **Step 5: Update frontend proxy routes — Phase 4** — DONE
 
-**Step 6: Decommission Python dev_server — Phase 5**
-- Remove Python dev_server once all routes verified through Java
-- Done when: Python server can be stopped and dashboard still works
+**Step 6: Decommission Python dev_server — Phase 5** — DONE (code). Verified: with nothing on port 8003, all 76 GET proxy routes return 200 through Next.js (`localhost:3000/api/v1/...`)
+
+**Step 7: Commit and push branch `phase5/java-api-parity`, open PR** — DONE; next: review and merge the PR
+
+**Step 8: Verify Docker compose stack** — start colima (`colima start`), `docker compose -f docker-compose.dev.yml up --build core-api analytics-service workflow-service`, confirm all three start and share data
+- Done when: `curl localhost:8081/api/v1/analytics/stats` shows the 10 seeded claims created by core-api
+
+**Step 9: Click through dashboard pages that use write endpoints** — appeals approve/send, tag manager, claim links, assignments, auto-router, batch appeals, escalations
+- Done when: each action succeeds in the UI and shows in the audit log
+
+**Step 10: Role check on appeal approval** — require a reviewer/manager role (X-User-Role header or JWT) on `/api/v1/appeals/{id}/approve`; return 403 otherwise
 
 ## How to verify
 
@@ -82,13 +92,17 @@ cd ~/Documents/claimshield-ai
 cd services/core-api && mvn clean package
 # Healthy: BUILD SUCCESS
 
-# Start (delete data/ first for fresh seed)
-rm -f data/claimshield.mv.db && mvn spring-boot:run
-# Healthy: "Started CoreApiApplication" on port 8080, "Found 15 JPA repository interfaces"
+# Start all three from ONE directory so they share ./data/claimshield (core-api first; it seeds)
+rm -rf data && java -jar services/core-api/target/core-api-1.0.0.jar &
+java -jar services/analytics-service/target/analytics-service-0.1.0.jar &
+java -jar services/workflow-service/target/workflow-service-1.0.0.jar &
+# Healthy: "Started CoreApiApplication" / "Started AnalyticsServiceApplication" / "Started WorkflowServiceApplication"
 
 # Test key endpoints
 curl -s http://localhost:8080/api/v1/claims | python3 -c "import sys,json; print(len(json.load(sys.stdin)), 'claims')"
 curl -s http://localhost:8080/api/v1/claims/workqueue | python3 -c "import sys,json; print(json.load(sys.stdin)['total'], 'workqueue items')"
+curl -s http://localhost:8080/api/v1/claims | python3 -c "import sys,json; c=json.load(sys.stdin)[0]; print('payer_name' in c and 'denial_code' in c)"  # True = snake_case contract OK
+curl -s http://localhost:8080/api/v1/audit/verify   # chain_valid: true
 curl -s http://localhost:8080/api/v1/denial-codes | python3 -c "import sys,json; print(len(json.load(sys.stdin)), 'denial codes')"
 curl -s http://localhost:8080/api/v1/rules/config | python3 -c "import sys,json; print('rules config OK')"
 curl -s http://localhost:8080/api/v1/system/health
@@ -96,11 +110,26 @@ curl -s http://localhost:8080/api/v1/system/health
 
 # Start frontend
 cd apps/web && npm run dev  # port 3000
-# Start Python (still needed for 99 routes)
-cd services/dev_server && python main.py  # port 8003
 ```
 
 ## History log
+
+### 2026-11-01 — Phase 4 gap fixes + Phase 5 (dev_server removed)
+Session started from another account; followed CLAUDE.md protocol (all 3 Java services built clean before changes).
+- **Snake_case JSON contract:** added `spring.jackson.property-naming-strategy: SNAKE_CASE` to all 3 services; new `service/ClaimMapper.java` (snake_case claim map, mirrors Python `_claim_dict`), `ClaimController.claimToMap` delegates to it; `ReferenceDataService.generateAppealLetter` reads snake_case keys
+- **Claim.payer** serializes as `payer_name` (`@JsonProperty("payer_name") @JsonAlias("payer")`) in core-api and the analytics-service copy
+- **Appeal** gained columns `version` (default 1), `confidence`, `policy_evidence`, `template_used`; derived JSON `letter_text` (= letter_body) and `needs_review` (= status is draft); `@JsonAlias("letter_text")` on letterBody; id auto-generated in `@PrePersist`
+- **core-api H2 URL** now `;AUTO_SERVER=TRUE` like the other two (it previously locked the shared file). Note: H2 rejects AUTO_SERVER together with DB_CLOSE_ON_EXIT=FALSE, so that flag was dropped
+- **29 missing endpoints implemented** (all ported from Python dev_server):
+  - `ClaimController`: GET `/claims/priority-scores`, POST `/claims/bulk`, POST `/claims/{id}/assign`, GET `/claims/{id}/predict` (deterministic, has `source`), POST `/claims/{id}/escalate`, POST `/claims/{id}/auto-route` (reads workflow-service `routing_rules` from shared DB via JdbcTemplate; priority DESC like workflow-service; operators equals/contains/starts_with/greater_than/less_than), GET `/claims/{id}/letter-history`, GET `/claims/{id}/appeal-versions`, GET `/claims/{id}/audit-trail`, GET+POST `/claims/{id}/links`; POST `/claims/appeal-letters/batch` now returns `{generated, errors, results}` and supports `save_as_draft` (drafts are needs_review)
+  - `AppealController`: approve/send accept PATCH (frontend) and POST; 409 "Already approved" / 409 "must be approved before sending"; `approved_by` from body; GET `/appeals?claim_id&needs_review&limit&offset`; GET `/appeals/{id}/preview`
+  - `AuditController`: GET `/audit/entries` (Python shape, parsed detail JSON), GET `/audit/verify` — via new `AuditService.verifyChain`, checks prev_hash links AND recomputes each SHA-256 (Python only checked links)
+  - New `TagController` (`/api/v1/tags`): GET list, GET summary, POST batch, POST bulk-add, POST bulk-remove
+  - New `WorkspaceController` (`/api/v1`): GET deadlines (days_remaining/is_overdue/urgency), assignments, calendar/deadlines, exports, my-activity
+  - `ReferenceDataService`: TEAM_MEMBERS (same roster as workflow-service), HISTORICAL_WIN_RATES, PAYER_MODIFIER, LINK_TYPES, `filingDaysFor()`
+- **Frontend routes repointed:** workqueue → `/claims/workqueue`; appeal-letters generate/batch → `/claims/appeal-letters/*`; assignments, calendar/deadlines, exports, my-activity moved from WORKFLOW_SERVICE_URL to JAVA_API_URL (data lives in core-api)
+- **Phase 5:** deleted `services/dev_server/`; `docker-compose.dev.yml` now runs core-api/analytics-service/workflow-service with a shared `java-data` volume and passes JAVA_API_URL/ANALYTICS_SERVICE_URL/WORKFLOW_SERVICE_URL to web; added a Dockerfile per Java service (UNVERIFIED); SETUP.md and CLAUDE.md updated
+- **Verification run:** static audit → 0 mismatches (only `/api/backend/appeal` → agent service, intentional). Live: 76 GET proxy paths 200 with no camelCase keys on all 3 services; write endpoints exercised (bulk, assign, escalate, auto-route matched "BCBS to Demo Biller", links, tags, letters, batch drafts); appeal flow send→409, approve→200, approve again→409, send→200; audit verify chain_valid=true; `npx tsc --noEmit` clean; Next.js dev with no Python on 8003 → all 76 GET proxy routes 200; `/dashboard/workqueue` renders seeded claims
 
 ### 2026-11-01 — Phase 4 complete: frontend proxy routes updated
 - Updated all 101 Next.js API proxy routes in `apps/web/app/api/v1/`

@@ -11,7 +11,7 @@ const DEV_HEADERS: Record<string, string> = {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const resp = await fetch(`${JAVA_API_URL}/api/v1/appeal-letters/batch`, {
+    const resp = await fetch(`${JAVA_API_URL}/api/v1/claims/appeal-letters/batch`, {
       method: "POST",
       headers: DEV_HEADERS,
       body: JSON.stringify(body),

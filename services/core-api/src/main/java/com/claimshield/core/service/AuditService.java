@@ -9,7 +9,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
-import java.util.UUID;
+import java.util.*;
 
 @Service
 public class AuditService {
@@ -37,11 +37,42 @@ public class AuditService {
         entry.setPrevHash(prevHash);
         entry.setCreatedAt(LocalDateTime.now());
 
-        String payload = String.join("|", tenantId, actorId, action, resourceType,
-                resourceId != null ? resourceId : "", detail != null ? detail : "", prevHash);
-        entry.setEntryHash(sha256(payload));
+        entry.setEntryHash(computeHash(entry));
 
         return auditLogRepository.save(entry);
+    }
+
+    public String computeHash(AuditLog entry) {
+        String payload = String.join("|", entry.getTenantId(), entry.getActorId(), entry.getAction(),
+                entry.getResourceType(),
+                entry.getResourceId() != null ? entry.getResourceId() : "",
+                entry.getDetail() != null ? entry.getDetail() : "",
+                entry.getPrevHash());
+        return sha256(payload);
+    }
+
+    /** Walks the tenant's chain oldest-first; checks each prev_hash link and recomputes each entry hash. */
+    public Map<String, Object> verifyChain(String tenantId, int limit) {
+        List<AuditLog> rows = auditLogRepository.findByTenantIdOrderByCreatedAtAsc(tenantId);
+        if (rows.size() > limit) rows = rows.subList(0, limit);
+
+        String brokenAt = null;
+        String reason = null;
+        String expectedPrev = "GENESIS";
+        for (AuditLog row : rows) {
+            if (!expectedPrev.equals(row.getPrevHash())) { brokenAt = row.getId(); reason = "prev_hash_mismatch"; break; }
+            if (!computeHash(row).equals(row.getEntryHash())) { brokenAt = row.getId(); reason = "entry_hash_mismatch"; break; }
+            expectedPrev = row.getEntryHash();
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("entries_checked", rows.size());
+        result.put("chain_valid", brokenAt == null);
+        result.put("valid", brokenAt == null);
+        result.put("broken_at_id", brokenAt);
+        result.put("first_broken_id", brokenAt);
+        result.put("reason", reason);
+        return result;
     }
 
     private String sha256(String input) {

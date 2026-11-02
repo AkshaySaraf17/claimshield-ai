@@ -10,4 +10,6 @@ import java.util.List;
 public interface ClaimTagRepository extends JpaRepository<ClaimTag, String> {
     List<ClaimTag> findByTenantIdAndClaimIdOrderByCreatedAtDesc(String tenantId, String claimId);
     void deleteByTenantIdAndClaimIdAndTag(String tenantId, String claimId, String tag);
+    List<ClaimTag> findByTenantIdOrderByCreatedAtDesc(String tenantId);
+    List<ClaimTag> findByTenantIdAndClaimIdAndTag(String tenantId, String claimId, String tag);
 }

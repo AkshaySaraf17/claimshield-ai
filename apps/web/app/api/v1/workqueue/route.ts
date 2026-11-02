@@ -9,7 +9,7 @@ const DEV_HEADERS: Record<string, string> = {
 
 export async function GET() {
   try {
-    const resp = await fetch(`${JAVA_API_URL}/api/v1/workqueue`, {
+    const resp = await fetch(`${JAVA_API_URL}/api/v1/claims/workqueue`, {
       headers: DEV_HEADERS,
     });
     const data = await resp.json();

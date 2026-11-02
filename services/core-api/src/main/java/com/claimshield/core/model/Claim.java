@@ -1,5 +1,7 @@
 package com.claimshield.core.model;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 import java.util.UUID;
@@ -24,6 +26,9 @@ public class Claim {
     @Column(name = "patient_id", length = 50)
     private String patientId;
 
+    // Frontend contract (ported from Python) names this field payer_name
+    @JsonProperty("payer_name")
+    @JsonAlias("payer")
     @Column(nullable = false)
     private String payer;
 

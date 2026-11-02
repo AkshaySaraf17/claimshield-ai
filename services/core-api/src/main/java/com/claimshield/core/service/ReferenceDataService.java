@@ -103,18 +103,48 @@ public class ReferenceDataService {
                 .toList();
     }
 
-    public LocalDateTime computeDeadline(String payerName) {
-        int days = DEFAULT_FILING_DAYS;
+    // Same roster as workflow-service WorkflowReferenceController
+    public static final Map<String, String> TEAM_MEMBERS = Map.of(
+            "dev-user-001", "Demo Biller",
+            "dev-user-002", "Sarah Johnson",
+            "dev-user-003", "Mike Chen",
+            "dev-user-004", "Lisa Park"
+    );
+
+    // Ported from Python dev_server HISTORICAL_WIN_RATES / PAYER_MODIFIER (deterministic prediction model)
+    public static final Map<String, Double> HISTORICAL_WIN_RATES = Map.ofEntries(
+            Map.entry("CO-4", 0.35), Map.entry("CO-16", 0.55), Map.entry("CO-18", 0.20), Map.entry("CO-29", 0.40),
+            Map.entry("CO-45", 0.30), Map.entry("CO-50", 0.65), Map.entry("CO-97", 0.45), Map.entry("CO-109", 0.25),
+            Map.entry("CO-197", 0.60), Map.entry("CO-204", 0.30), Map.entry("CO-236", 0.40),
+            Map.entry("PR-1", 0.15), Map.entry("PR-2", 0.20), Map.entry("PR-3", 0.10)
+    );
+    public static final double DEFAULT_WIN_RATE = 0.30;
+
+    public static final Map<String, Double> PAYER_MODIFIER = Map.of(
+            "Aetna", 0.05, "BCBS", 0.0, "Blue Cross Blue Shield", 0.0,
+            "Cigna", -0.05, "UnitedHealthcare", -0.10,
+            "Medicare", 0.10, "Medicaid", 0.05, "Humana", 0.0
+    );
+
+    public static final List<String> LINK_TYPES = List.of("related", "duplicate", "parent", "child", "follow_up", "rebill");
+
+    public static String teamMemberName(String userId) {
+        if (userId == null) return null;
+        return TEAM_MEMBERS.getOrDefault(userId, userId);
+    }
+
+    public int filingDaysFor(String payerName) {
         if (payerName != null) {
             String normalized = payerName.toLowerCase().trim();
             for (Map.Entry<String, Integer> entry : PAYER_FILING_DAYS.entrySet()) {
-                if (normalized.contains(entry.getKey())) {
-                    days = entry.getValue();
-                    break;
-                }
+                if (normalized.contains(entry.getKey())) return entry.getValue();
             }
         }
-        return LocalDateTime.now().plusDays(days);
+        return DEFAULT_FILING_DAYS;
+    }
+
+    public LocalDateTime computeDeadline(String payerName) {
+        return LocalDateTime.now().plusDays(filingDaysFor(payerName));
     }
 
     public String generateAppealLetter(Map<String, Object> claimData, String templateCategory) {
@@ -125,20 +155,20 @@ public class ReferenceDataService {
         }
 
         String today = LocalDateTime.now().format(DateTimeFormatter.ofPattern("MMMM dd, yyyy"));
-        long deniedCents = claimData.get("amountDeniedCents") instanceof Number n ? n.longValue() : 0L;
+        long deniedCents = claimData.get("amount_denied_cents") instanceof Number n ? n.longValue() : 0L;
         String amount = String.format("$%,.2f", deniedCents / 100.0);
 
         StringBuilder sb = new StringBuilder();
         sb.append("Date: ").append(today).append("\n\n");
-        sb.append("Re: Appeal of Denied Claim — ").append(claimData.getOrDefault("claimNumber", "N/A")).append("\n");
-        sb.append("Patient ID: ").append(claimData.getOrDefault("patientId", "N/A")).append("\n");
-        sb.append("Payer: ").append(claimData.getOrDefault("payer", "Unknown Payer")).append("\n");
-        sb.append("Denial Code: ").append(claimData.getOrDefault("denialCode", "N/A")).append("\n");
+        sb.append("Re: Appeal of Denied Claim — ").append(claimData.getOrDefault("claim_number", "N/A")).append("\n");
+        sb.append("Patient ID: ").append(claimData.getOrDefault("patient_id", "N/A")).append("\n");
+        sb.append("Payer: ").append(claimData.getOrDefault("payer_name", "Unknown Payer")).append("\n");
+        sb.append("Denial Code: ").append(claimData.getOrDefault("denial_code", "N/A")).append("\n");
         sb.append("Amount Denied: ").append(amount).append("\n\n");
         sb.append("Dear Claims Review Department,\n\n");
         sb.append("I am writing to formally appeal the denial of the above-referenced claim. ");
-        sb.append("The claim was denied under code ").append(claimData.getOrDefault("denialCode", "N/A"));
-        sb.append(" (").append(claimData.getOrDefault("denialReason", "reason not specified")).append(").\n\n");
+        sb.append("The claim was denied under code ").append(claimData.getOrDefault("denial_code", "N/A"));
+        sb.append(" (").append(claimData.getOrDefault("denial_reason", "reason not specified")).append(").\n\n");
 
         String divider = "─".repeat(40);
         switch (templateCategory) {
@@ -149,7 +179,7 @@ public class ReferenceDataService {
                 sb.append("the procedure/service was required to diagnose or treat the patient's ");
                 sb.append("condition based on accepted standards of medical practice.\n\n");
                 sb.append("The clinical evidence supporting this determination includes:\n");
-                sb.append("  • Clinical notes: ").append(claimData.getOrDefault("rawClinicalNotes", "See attached")).append("\n\n");
+                sb.append("  • Clinical notes: ").append(claimData.getOrDefault("raw_clinical_notes", "See attached")).append("\n\n");
                 sb.append("Source: ").append(template.source()).append("\n");
             }
             case "Timely Filing" -> {

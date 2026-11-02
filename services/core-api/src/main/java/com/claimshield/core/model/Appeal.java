@@ -1,7 +1,9 @@
 package com.claimshield.core.model;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
+import java.util.UUID;
 
 @Entity
 @Table(name = "appeals")
@@ -20,6 +22,7 @@ public class Appeal {
     @Column(nullable = false, length = 30)
     private String status = "draft";
 
+    @JsonAlias("letter_text")
     @Column(name = "letter_body", columnDefinition = "TEXT")
     private String letterBody;
 
@@ -53,8 +56,21 @@ public class Appeal {
     @Column(columnDefinition = "TEXT")
     private String source;
 
+    @Column(name = "version")
+    private Integer version = 1;
+
+    @Column(name = "confidence")
+    private Double confidence;
+
+    @Column(name = "policy_evidence", columnDefinition = "TEXT")
+    private String policyEvidence;
+
+    @Column(name = "template_used", length = 100)
+    private String templateUsed;
+
     @PrePersist
     protected void onCreate() {
+        if (id == null) id = UUID.randomUUID().toString();
         if (createdAt == null) createdAt = LocalDateTime.now();
         updatedAt = LocalDateTime.now();
     }
@@ -78,6 +94,23 @@ public class Appeal {
 
     public String getLetterBody() { return letterBody; }
     public void setLetterBody(String letterBody) { this.letterBody = letterBody; }
+
+    // Frontend contract: letter_text mirrors letter_body; needs_review is true until a human approves
+    public String getLetterText() { return letterBody; }
+
+    public boolean getNeedsReview() { return status == null || "draft".equals(status); }
+
+    public Integer getVersion() { return version; }
+    public void setVersion(Integer version) { this.version = version; }
+
+    public Double getConfidence() { return confidence; }
+    public void setConfidence(Double confidence) { this.confidence = confidence; }
+
+    public String getPolicyEvidence() { return policyEvidence; }
+    public void setPolicyEvidence(String policyEvidence) { this.policyEvidence = policyEvidence; }
+
+    public String getTemplateUsed() { return templateUsed; }
+    public void setTemplateUsed(String templateUsed) { this.templateUsed = templateUsed; }
 
     public String getLetterFormat() { return letterFormat; }
     public void setLetterFormat(String letterFormat) { this.letterFormat = letterFormat; }
