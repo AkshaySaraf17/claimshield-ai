@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const DEV_SERVER_URL = process.env.DEV_SERVER_URL || "http://localhost:8003";
+const WORKFLOW_SERVICE_URL = process.env.WORKFLOW_SERVICE_URL || "http://localhost:8082";
 const DEV_HEADERS: Record<string, string> = {
   "X-Tenant-Id": "00000000-0000-0000-0000-000000000001",
   "X-User-Id": "dev-user-001",
@@ -14,7 +14,7 @@ export async function PUT(
   const { key } = await params;
   try {
     const body = await req.json();
-    const resp = await fetch(`${DEV_SERVER_URL}/api/v1/preferences/${key}`, {
+    const resp = await fetch(`${WORKFLOW_SERVICE_URL}/api/v1/preferences/${key}`, {
       method: "PUT",
       headers: { ...DEV_HEADERS, "Content-Type": "application/json" },
       body: JSON.stringify(body),

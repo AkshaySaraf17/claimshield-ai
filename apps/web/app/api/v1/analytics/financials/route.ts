@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-const DEV_SERVER_URL = process.env.DEV_SERVER_URL || "http://localhost:8003";
+const ANALYTICS_SERVICE_URL = process.env.ANALYTICS_SERVICE_URL || "http://localhost:8081";
 const DEV_HEADERS: Record<string, string> = {
   "X-Tenant-Id": "00000000-0000-0000-0000-000000000001",
   "X-User-Id": "dev-user-001",
@@ -12,7 +12,7 @@ export async function GET(request: Request) {
   const period = searchParams.get("period_days") || "90";
   try {
     const resp = await fetch(
-      `${DEV_SERVER_URL}/api/v1/analytics/financials?period_days=${period}`,
+      `${ANALYTICS_SERVICE_URL}/api/v1/analytics/financials?period_days=${period}`,
       { headers: DEV_HEADERS },
     );
     const data = await resp.json();

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const DEV_SERVER_URL = process.env.DEV_SERVER_URL || "http://localhost:8003";
+const JAVA_API_URL = process.env.JAVA_API_URL || "http://localhost:8080";
 const DEV_HEADERS: Record<string, string> = {
   "X-Tenant-Id": "00000000-0000-0000-0000-000000000001",
   "X-User-Id": "dev-user-001",
@@ -14,7 +14,7 @@ export async function PATCH(
   const { id } = await params;
   try {
     const resp = await fetch(
-      `${DEV_SERVER_URL}/api/v1/appeals/${id}/send`,
+      `${JAVA_API_URL}/api/v1/appeals/${id}/send`,
       {
         method: "PATCH",
         headers: DEV_HEADERS,

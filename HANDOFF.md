@@ -39,7 +39,8 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 - **Phase 1 COMPLETE** — all entities, controllers, services, EDI parser, and claim operations ported to Java
 - **Phase 2 COMPLETE** — workflow-service (port 8082) created with 8 entities, 8 repositories, 8 controllers, ~25 endpoints, seed data
 - **Phase 3 COMPLETE** — analytics-service (port 8081) created with 10 model copies, 7 repositories, 6 controllers, 25 GET endpoints
-- **Phase 4 next** — update 99 frontend proxy routes from Python to Java services
+- **Phase 4 COMPLETE** — all 101 frontend proxy routes updated: 56 → core-api (8080), 25 → analytics-service (8081), 20 → workflow-service (8082)
+- **Phase 5 next** — decommission Python dev_server (no longer needed for any frontend routes)
 - No files are half-written; everything compiles and runs
 
 ### Broken or blocked
@@ -66,10 +67,7 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 
 **Step 4: Create analytics-service (port 8081) — Phase 3** — DONE
 
-**Step 5: Update frontend proxy routes — Phase 4**
-- Change 99 routes in `apps/web/app/api/v1/` from Python (port 8003) to appropriate Java service
-- analytics/* → port 8081, workflow/* → port 8082, everything else → port 8080
-- Done when: all dashboard pages load data from Java services
+**Step 5: Update frontend proxy routes — Phase 4** — DONE
 
 **Step 6: Decommission Python dev_server — Phase 5**
 - Remove Python dev_server once all routes verified through Java
@@ -103,6 +101,14 @@ cd services/dev_server && python main.py  # port 8003
 ```
 
 ## History log
+
+### 2026-11-01 — Phase 4 complete: frontend proxy routes updated
+- Updated all 101 Next.js API proxy routes in `apps/web/app/api/v1/`
+- 56 routes → JAVA_API_URL (core-api, port 8080): claims, appeals, audit, documents, EDI, tags, etc.
+- 25 routes → ANALYTICS_SERVICE_URL (analytics-service, port 8081): analytics/*, reports/*, stats
+- 20 routes → WORKFLOW_SERVICE_URL (workflow-service, port 8082): routing-rules, preferences, watchlist, bookmarks, etc.
+- Zero routes remain pointing to Python dev_server (port 8003)
+- Environment variables: JAVA_API_URL, ANALYTICS_SERVICE_URL, WORKFLOW_SERVICE_URL
 
 ### 2026-11-01 — Phase 3 complete: analytics-service created
 - Created `services/analytics-service/` Spring Boot project on port 8081
