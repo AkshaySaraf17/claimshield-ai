@@ -1,5 +1,5 @@
 # Handoff
-Last updated: 2026-11-01 | Branch: main | Last commit: d07a077 (pending new commit)
+Last updated: 2026-11-01 | Branch: main | Last commit: pending (Phase 3)
 
 ## Project summary
 ClaimShield AI is a healthcare claims denial management platform with 92 dashboard pages (Next.js 15, port 3000), a Java Spring Boot core-api (port 8080) with 15 entities, 14 controllers, and ~50 endpoints, a Python FastAPI monolith being replaced (port 8003), and a Python AI/ML agent service (port 8001, not migrating). Monorepo: `apps/web/` (frontend), `services/core-api/` (Java), `services/dev_server/` (Python, being replaced), `services/agent_service/` (Python AI, stays).
@@ -9,6 +9,7 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 ### Done and working
 - **92 Next.js dashboard pages** with collapsible sidebar nav, Google OAuth + admin + dev login via NextAuth
 - **Python dev_server** (`services/dev_server/main.py`): 5358 lines, 125 endpoints — fully functional, still serves 99 frontend proxy routes on port 8003
+- **Java analytics-service** (`services/analytics-service/`, port 8081): Spring Boot 3.2.5, read-only analytics — 10 model classes (copied from core-api), 7 repositories, 6 controllers, 25 GET endpoints covering stats, payer analytics, denial patterns, financials, team performance, reports, SLA, appeal effectiveness
 - **Java core-api** (`services/core-api/`, port 8080): Spring Boot 3.2.5, Java 17, H2 file DB — **massively expanded this session**:
   - **15 JPA entities** (4 original + 11 new): Claim, Appeal, AuditLog, Document, Tenant, Clinic, ClaimNote, ClaimComment, ClaimAttachment, ClaimTag, ClaimAssignment, ClaimCost, ClaimLink, PayerResponse, ClaimStatusHistory
   - **15 Spring Data JPA repositories** (4 original + 11 new) — all at `services/core-api/src/main/java/com/claimshield/core/repository/`
@@ -37,7 +38,8 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 ### In progress
 - **Phase 1 COMPLETE** — all entities, controllers, services, EDI parser, and claim operations ported to Java
 - **Phase 2 COMPLETE** — workflow-service (port 8082) created with 8 entities, 8 repositories, 8 controllers, ~25 endpoints, seed data
-- **Phase 3 next** — create analytics-service (port 8081)
+- **Phase 3 COMPLETE** — analytics-service (port 8081) created with 10 model copies, 7 repositories, 6 controllers, 25 GET endpoints
+- **Phase 4 next** — update 99 frontend proxy routes from Python to Java services
 - No files are half-written; everything compiles and runs
 
 ### Broken or blocked
@@ -62,11 +64,7 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 
 **Step 3: Create workflow-service (port 8082) — Phase 2** — DONE
 
-**Step 4: Create analytics-service (port 8081) — Phase 3**
-- New Spring Boot project at `services/analytics-service/`
-- Read-only, no own entities, ~25 GET endpoints for all analytics/reports
-- Reuse core-api entity classes (copy the model package)
-- Done when: analytics endpoints return computed data from shared DB
+**Step 4: Create analytics-service (port 8081) — Phase 3** — DONE
 
 **Step 5: Update frontend proxy routes — Phase 4**
 - Change 99 routes in `apps/web/app/api/v1/` from Python (port 8003) to appropriate Java service
@@ -105,6 +103,19 @@ cd services/dev_server && python main.py  # port 8003
 ```
 
 ## History log
+
+### 2026-11-01 — Phase 3 complete: analytics-service created
+- Created `services/analytics-service/` Spring Boot project on port 8081
+- Read-only service — no own entities, copies 10 model classes from core-api (Claim, Appeal, AuditLog, ClaimAssignment, ClaimCost, ClaimNote, ClaimComment, ClaimTag, Clinic, PayerResponse) with package rename
+- 7 repositories: ClaimRepository, AppealRepository, AuditLogRepository, ClaimAssignmentRepository, ClaimCostRepository, ClinicRepository, PayerResponseRepository
+- 6 controllers (25 GET endpoints):
+  - StatsController: stats, quick-stats, status-distribution, scorecard, pipeline
+  - PayerAnalyticsController: payers, payer-performance, payer-sla, payer-intelligence
+  - PatternsController: patterns, denial-codes, heatmap, trends, aging
+  - FinancialController: financials, recovery, cost-summary
+  - TeamController: team-performance, workload, user-activity, clinics
+  - ReportsController: reports/summary, reports/summary-text, appeal-effectiveness, sla, system/health
+- All endpoints verified with curl — service builds and starts cleanly
 
 ### 2026-11-01 — Phase 2 complete: workflow-service created
 - Created `services/workflow-service/` Spring Boot project on port 8082
