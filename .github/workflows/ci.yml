@@ -3,8 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
+  # All PRs, so stacked PRs (based on another feature branch) are checked too
   pull_request:
-    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -26,8 +26,29 @@ jobs:
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
       - run: npm ci
-      - run: npx next lint
+      - run: npm run lint
       - run: npx tsc --noEmit
+
+  # --- Java services (contract tests on in-memory H2) ---
+  java-test:
+    name: Java tests (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [core-api, analytics-service, workflow-service]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+          cache-dependency-path: services/${{ matrix.service }}/pom.xml
+      - run: mvn -B test
 
   # --- Python shared package ---
   python-lint:
