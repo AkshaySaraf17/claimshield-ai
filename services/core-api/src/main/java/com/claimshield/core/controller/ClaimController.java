@@ -31,6 +31,9 @@ public class ClaimController {
     private final ClaimAssignmentRepository assignmentRepository;
     private final ClaimLinkRepository linkRepository;
     private final JdbcTemplate jdbcTemplate;
+    private final ClaimTagRepository tagRepository;
+    private final ClaimCostRepository costRepository;
+    private final ClaimAttachmentRepository attachmentRepository;
 
     public ClaimController(ClaimRepository claimRepository,
                            AppealRepository appealRepository,
@@ -41,7 +44,10 @@ public class ClaimController {
                            ClaimNoteRepository noteRepository,
                            ClaimAssignmentRepository assignmentRepository,
                            ClaimLinkRepository linkRepository,
-                           JdbcTemplate jdbcTemplate) {
+                           JdbcTemplate jdbcTemplate,
+                           ClaimTagRepository tagRepository,
+                           ClaimCostRepository costRepository,
+                           ClaimAttachmentRepository attachmentRepository) {
         this.claimRepository = claimRepository;
         this.appealRepository = appealRepository;
         this.auditService = auditService;
@@ -52,6 +58,9 @@ public class ClaimController {
         this.assignmentRepository = assignmentRepository;
         this.linkRepository = linkRepository;
         this.jdbcTemplate = jdbcTemplate;
+        this.tagRepository = tagRepository;
+        this.costRepository = costRepository;
+        this.attachmentRepository = attachmentRepository;
     }
 
     @GetMapping
@@ -638,6 +647,13 @@ public class ClaimController {
                     snapshot.put("status_history", statusHistoryRepository.findByTenantIdAndClaimIdOrderByChangedAtDesc(tenantId, id));
                     snapshot.put("appeals", appealRepository.findByClaimIdOrderByCreatedAtDesc(id));
                     snapshot.put("audit_trail", auditLogRepository.findByTenantIdAndResourceIdOrderByCreatedAtAsc(tenantId, id));
+                    snapshot.put("tags", tagRepository.findByTenantIdAndClaimIdOrderByCreatedAtDesc(tenantId, id).stream()
+                            .map(ClaimTag::getTag).toList());
+                    long costsTotal = costRepository.findByTenantIdAndClaimIdOrderByCreatedAtDesc(tenantId, id).stream()
+                            .mapToLong(cost -> cost.getAmountCents() != null ? cost.getAmountCents() : 0).sum();
+                    snapshot.put("costs_total_cents", costsTotal);
+                    snapshot.put("total_cost_cents", costsTotal);
+                    snapshot.put("attachments_count", attachmentRepository.findByTenantIdAndClaimIdOrderByCreatedAtDesc(tenantId, id).size());
                     snapshot.put("snapshot_at", LocalDateTime.now().toString());
                     return ResponseEntity.ok((Object) snapshot);
                 })

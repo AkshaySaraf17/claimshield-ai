@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { identityHeaders } from "@/app/lib/identity";
 
 const WORKFLOW_SERVICE_URL = process.env.WORKFLOW_SERVICE_URL || "http://localhost:8082";
-const DEV_HEADERS: Record<string, string> = {
-  "X-Tenant-Id": "00000000-0000-0000-0000-000000000001",
-  "X-User-Id": "dev-user-001",
-  "X-User-Roles": "biller",
-};
 
 export async function PUT(
   req: NextRequest,
@@ -16,7 +12,7 @@ export async function PUT(
     const body = await req.json();
     const resp = await fetch(`${WORKFLOW_SERVICE_URL}/api/v1/preferences/${key}`, {
       method: "PUT",
-      headers: { ...DEV_HEADERS, "Content-Type": "application/json" },
+      headers: { ...(await identityHeaders()), "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     const data = await resp.json();

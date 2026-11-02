@@ -11,15 +11,19 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/v1/appeals")
 public class AppealController {
+
+    private static final Set<String> APPROVER_ROLES = Set.of("reviewer", "manager", "admin");
 
     private final AppealRepository appealRepository;
     private final AuditService auditService;
@@ -96,14 +100,18 @@ public class AppealController {
 
     @RequestMapping(value = "/{id}/approve", method = {RequestMethod.POST, RequestMethod.PATCH})
     public ResponseEntity<?> approveAppeal(@PathVariable String id,
-                                           @RequestBody(required = false) Map<String, String> body,
                                            HttpServletRequest request) {
+        if (!hasAnyRole(request, APPROVER_ROLES)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("detail",
+                    "Approving an appeal requires one of the roles " + APPROVER_ROLES.stream().sorted().toList()));
+        }
         return appealRepository.findById(id).map(appeal -> {
             if (!appeal.getNeedsReview()) {
                 return ResponseEntity.status(HttpStatus.CONFLICT).body((Object) Map.of("detail", "Already approved"));
             }
+            // The approver is always the authenticated caller, never a value from the request body
             String userId = getUserId(request);
-            String approvedBy = body != null && body.get("approved_by") != null ? body.get("approved_by") : userId;
+            String approvedBy = userId;
             appeal.setStatus("approved");
             appeal.setApprovedBy(approvedBy);
             appeal.setApprovedAt(LocalDateTime.now());
@@ -150,5 +158,14 @@ public class AppealController {
     private String getUserId(HttpServletRequest request) {
         String header = request.getHeader("X-User-Id");
         return header != null ? header : "dev-user-001";
+    }
+
+    /** X-User-Roles is a comma-separated list set by the frontend proxy from the server-side session (APISIX in prod). */
+    private boolean hasAnyRole(HttpServletRequest request, Set<String> allowed) {
+        String header = request.getHeader("X-User-Roles");
+        if (header == null || header.isBlank()) return false;
+        return Arrays.stream(header.split(","))
+                .map(r -> r.trim().toLowerCase())
+                .anyMatch(allowed::contains);
     }
 }

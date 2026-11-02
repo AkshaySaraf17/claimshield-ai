@@ -1,18 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
+import { identityHeaders } from "@/app/lib/identity";
 
 const JAVA_API_URL = process.env.JAVA_API_URL || "http://localhost:8080";
-const DEV_HEADERS: Record<string, string> = {
-  "X-Tenant-Id": "00000000-0000-0000-0000-000000000001",
-  "X-User-Id": "dev-user-001",
-  "X-User-Roles": "biller",
-};
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const resp = await fetch(`${JAVA_API_URL}/api/v1/claims/bulk`, {
       method: "POST",
-      headers: { ...DEV_HEADERS, "Content-Type": "application/json" },
+      headers: { ...(await identityHeaders()), "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     const data = await resp.json();

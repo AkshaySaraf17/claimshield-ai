@@ -6,7 +6,7 @@ interface ActivityItem {
   id: number;
   action: string;
   resource_type: string;
-  resource_id: string;
+  resource_id: string | null;
   created_at: string;
 }
 
@@ -81,7 +81,7 @@ export default function MyActivityPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-ink-500">
-                    {item.resource_id.slice(0, 8)}...
+                    {(item.resource_id ?? "").slice(0, 8)}...
                   </td>
                   <td className="px-4 py-3 text-right text-xs text-ink-500">
                     {new Date(item.created_at).toLocaleString()}

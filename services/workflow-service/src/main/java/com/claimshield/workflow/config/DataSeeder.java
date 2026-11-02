@@ -5,6 +5,8 @@ import com.claimshield.workflow.repository.*;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+
 @Component
 public class DataSeeder implements CommandLineRunner {
 
@@ -65,6 +67,8 @@ public class DataSeeder implements CommandLineRunner {
         t1.setTenantId(tenantId);
         t1.setName("Standard Appeal Letter");
         t1.setCategory("appeal");
+        t1.setSections(List.of("patient_info", "denial_summary", "clinical_justification", "closing"));
+        t1.setSource("CMS Medicare Claims Processing Manual Ch. 29 (Appeals)");
         t1.setContent("Dear [Payer],\n\nWe are writing to appeal the denial of claim [ClaimNumber] for patient [PatientName].\n\n[Details]\n\nSincerely,\n[ProviderName]");
         t1.setCreatedBy("dev-user-001");
         templateRepo.save(t1);
@@ -73,6 +77,8 @@ public class DataSeeder implements CommandLineRunner {
         t2.setTenantId(tenantId);
         t2.setName("Urgent Timely Filing Appeal");
         t2.setCategory("timely_filing");
+        t2.setSections(List.of("patient_info", "denial_summary", "proof_of_timely_filing", "closing"));
+        t2.setSource("42 CFR 424.44 (time limits for filing claims)");
         t2.setContent("URGENT: This appeal is time-sensitive.\n\nDear [Payer],\n\nThe denial for claim [ClaimNumber] citing timely filing is incorrect. Original submission date: [SubmissionDate].\n\nAttached: proof of timely submission.\n\nSincerely,\n[ProviderName]");
         t2.setCreatedBy("dev-user-001");
         templateRepo.save(t2);

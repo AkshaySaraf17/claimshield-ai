@@ -1,12 +1,17 @@
 package com.claimshield.workflow.model;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 @Entity
 @Table(name = "custom_templates")
 public class CustomTemplate {
+
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     @Id
     @Column(length = 36)
@@ -23,6 +28,17 @@ public class CustomTemplate {
 
     @Column(columnDefinition = "TEXT", nullable = false)
     private String content;
+
+    // JSON array of section keys, e.g. ["patient_info","denial_summary","closing"]
+    @Column(columnDefinition = "TEXT")
+    private String sections;
+
+    // Regulatory/contract citation backing the template (every healthcare rule needs a source)
+    @Column(columnDefinition = "TEXT")
+    private String source;
+
+    @Column(name = "body_template", columnDefinition = "TEXT")
+    private String bodyTemplate;
 
     @Column(name = "is_active", nullable = false)
     private Boolean isActive = true;
@@ -56,6 +72,25 @@ public class CustomTemplate {
     public void setCategory(String category) { this.category = category; }
     public String getContent() { return content; }
     public void setContent(String content) { this.content = content; }
+    public List<String> getSections() {
+        if (sections == null || sections.isBlank()) return List.of();
+        try {
+            return JSON.readValue(sections, new TypeReference<List<String>>() {});
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+    public void setSections(List<String> sections) {
+        try {
+            this.sections = sections != null ? JSON.writeValueAsString(sections) : null;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Invalid sections", e);
+        }
+    }
+    public String getSource() { return source; }
+    public void setSource(String source) { this.source = source; }
+    public String getBodyTemplate() { return bodyTemplate; }
+    public void setBodyTemplate(String bodyTemplate) { this.bodyTemplate = bodyTemplate; }
     public Boolean getIsActive() { return isActive; }
     public void setIsActive(Boolean isActive) { this.isActive = isActive; }
     public String getCreatedBy() { return createdBy; }

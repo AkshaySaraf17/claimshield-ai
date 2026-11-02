@@ -39,12 +39,16 @@ public class CustomTemplateController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public CustomTemplate create(@RequestBody Map<String, String> body, HttpServletRequest request) {
+    public CustomTemplate create(@RequestBody Map<String, Object> body, HttpServletRequest request) {
         CustomTemplate t = new CustomTemplate();
         t.setTenantId(getTenantId(request));
-        t.setName(body.get("name"));
-        t.setCategory(body.getOrDefault("category", "general"));
-        t.setContent(body.get("content"));
+        t.setName((String) body.get("name"));
+        t.setCategory((String) body.getOrDefault("category", "general"));
+        t.setSections(stringList(body.get("sections")));
+        t.setSource((String) body.get("source"));
+        t.setBodyTemplate((String) body.get("body_template"));
+        Object content = body.containsKey("content") ? body.get("content") : body.get("body_template");
+        t.setContent(content != null ? content.toString() : "");
         t.setCreatedBy(getUserId(request));
         return repository.save(t);
     }
@@ -60,6 +64,9 @@ public class CustomTemplateController {
                     if (body.containsKey("category")) t.setCategory((String) body.get("category"));
                     if (body.containsKey("content")) t.setContent((String) body.get("content"));
                     if (body.containsKey("is_active")) t.setIsActive((Boolean) body.get("is_active"));
+                    if (body.containsKey("sections")) t.setSections(stringList(body.get("sections")));
+                    if (body.containsKey("source")) t.setSource((String) body.get("source"));
+                    if (body.containsKey("body_template")) t.setBodyTemplate((String) body.get("body_template"));
                     return ResponseEntity.ok(repository.save(t));
                 })
                 .orElse(ResponseEntity.notFound().build());
@@ -81,5 +88,10 @@ public class CustomTemplateController {
     private String getUserId(HttpServletRequest request) {
         String h = request.getHeader("X-User-Id");
         return h != null ? h : "dev-user-001";
+    }
+
+    private List<String> stringList(Object value) {
+        if (!(value instanceof List<?> list)) return List.of();
+        return list.stream().map(String::valueOf).toList();
     }
 }

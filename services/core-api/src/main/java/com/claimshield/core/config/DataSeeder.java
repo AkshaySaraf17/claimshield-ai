@@ -157,7 +157,7 @@ public class DataSeeder {
                 }
             }
 
-            auditService.writeAudit(tenantId, "system", "seed.completed", "system", null,
+            auditService.writeAudit(tenantId, "system", "seed.completed", "tenant", tenantId,
                     "{\"claims_seeded\":10,\"notes\":10,\"tags\":10,\"assignments\":5,\"costs\":5}");
         };
     }

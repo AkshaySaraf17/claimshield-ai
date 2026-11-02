@@ -1,6 +1,9 @@
 package com.claimshield.core.controller;
 
+import com.claimshield.core.model.Claim;
+import com.claimshield.core.repository.ClaimRepository;
 import com.claimshield.core.service.ReferenceDataService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.*;
@@ -11,9 +14,11 @@ import java.util.stream.Collectors;
 public class ReferenceController {
 
     private final ReferenceDataService referenceDataService;
+    private final ClaimRepository claimRepository;
 
-    public ReferenceController(ReferenceDataService referenceDataService) {
+    public ReferenceController(ReferenceDataService referenceDataService, ClaimRepository claimRepository) {
         this.referenceDataService = referenceDataService;
+        this.claimRepository = claimRepository;
     }
 
     @GetMapping("/denial-codes")
@@ -30,15 +35,23 @@ public class ReferenceController {
     }
 
     @GetMapping("/denial-prevention-tips")
-    public List<Map<String, String>> denialPreventionTips() {
-        return List.of(
-                Map.of("category", "Coding", "tip", "Verify CPT/HCPCS codes match documentation before submission", "source", "AMA CPT Guidelines"),
-                Map.of("category", "Timely Filing", "tip", "Track filing deadlines per payer and submit at least 2 weeks early", "source", "Payer contract terms"),
-                Map.of("category", "Authorization", "tip", "Obtain and document prior auth before services are rendered", "source", "ERISA §503"),
-                Map.of("category", "Medical Necessity", "tip", "Include detailed clinical notes supporting medical necessity", "source", "CMS Claims Manual Ch. 1 §60"),
-                Map.of("category", "Duplicate", "tip", "Check for existing claims before resubmitting to avoid duplicate flags", "source", "CMS IOM Pub. 100-04"),
-                Map.of("category", "Coverage", "tip", "Verify patient eligibility and coverage before rendering services", "source", "Patient's Summary of Benefits")
-        );
+    public List<Map<String, Object>> denialPreventionTips(HttpServletRequest request) {
+        Map<String, Long> counts = claimRepository.findByTenantIdOrderByCreatedAtDesc(getTenantId(request)).stream()
+                .filter(c -> c.getDenialCode() != null && !c.getDenialCode().isBlank())
+                .collect(Collectors.groupingBy(Claim::getDenialCode, Collectors.counting()));
+
+        return counts.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .map(e -> {
+                    boolean known = ReferenceDataService.PREVENTION_TIPS.containsKey(e.getKey());
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("denial_code", e.getKey());
+                    m.put("occurrence_count", e.getValue());
+                    m.put("tips", known ? ReferenceDataService.PREVENTION_TIPS.get(e.getKey()) : ReferenceDataService.DEFAULT_PREVENTION_TIPS);
+                    m.put("source", known ? "CMS/AMA guidelines" : "general best practice");
+                    return m;
+                })
+                .toList();
     }
 
     @GetMapping("/appeal-templates")
@@ -79,5 +92,10 @@ public class ReferenceController {
     @GetMapping("/system/health")
     public Map<String, String> health() {
         return Map.of("status", "ok", "service", "core-api", "mode", "h2-file");
+    }
+
+    private String getTenantId(HttpServletRequest request) {
+        String header = request.getHeader("X-Tenant-Id");
+        return header != null ? header : "00000000-0000-0000-0000-000000000001";
     }
 }

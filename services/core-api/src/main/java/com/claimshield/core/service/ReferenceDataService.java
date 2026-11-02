@@ -126,6 +126,34 @@ public class ReferenceDataService {
             "Medicare", 0.10, "Medicaid", 0.05, "Humana", 0.0
     );
 
+    // Ported from Python dev_server PREVENTION_TIPS / DEFAULT_TIPS
+    public static final Map<String, List<String>> PREVENTION_TIPS = Map.of(
+            "CO-16", List.of("Verify patient eligibility before scheduling services",
+                    "Confirm insurance coverage and policy status at check-in",
+                    "Document all eligibility verification attempts"),
+            "CO-4", List.of("Use modifier codes correctly per payer guidelines",
+                    "Review bundling rules before submitting procedure codes",
+                    "Check NCCI edits for code pair conflicts"),
+            "CO-97", List.of("Check benefit period limits before authorizing treatment",
+                    "Track patient utilization against plan maximums",
+                    "Request pre-authorization for services near plan limits"),
+            "CO-29", List.of("Verify timely filing deadlines per payer contract",
+                    "Implement automated filing deadline alerts",
+                    "Submit claims within 48 hours of service date"),
+            "PR-1", List.of("Collect patient copay/coinsurance at time of service",
+                    "Verify patient financial responsibility before treatment",
+                    "Provide upfront cost estimates using payer fee schedules"),
+            "CO-197", List.of("Obtain prior authorization before rendering services",
+                    "Track authorization expiration dates",
+                    "Verify authorization covers the specific CPT codes billed")
+    );
+
+    public static final List<String> DEFAULT_PREVENTION_TIPS = List.of(
+            "Review denial patterns monthly to identify systemic issues",
+            "Train staff on top denial reasons and prevention strategies",
+            "Implement pre-claim scrubbing to catch errors before submission"
+    );
+
     public static final List<String> LINK_TYPES = List.of("related", "duplicate", "parent", "child", "follow_up", "rebill");
 
     public static String teamMemberName(String userId) {

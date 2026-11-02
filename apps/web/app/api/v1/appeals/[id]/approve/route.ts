@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { identityHeaders } from "@/app/lib/identity";
 
 const JAVA_API_URL = process.env.JAVA_API_URL || "http://localhost:8080";
-const DEV_HEADERS: Record<string, string> = {
-  "X-Tenant-Id": "00000000-0000-0000-0000-000000000001",
-  "X-User-Id": "dev-user-001",
-  "X-User-Roles": "biller",
-};
 
 export async function PATCH(
   req: NextRequest,
@@ -18,7 +14,7 @@ export async function PATCH(
       `${JAVA_API_URL}/api/v1/appeals/${id}/approve`,
       {
         method: "PATCH",
-        headers: { "Content-Type": "application/json", ...DEV_HEADERS },
+        headers: { "Content-Type": "application/json", ...(await identityHeaders()) },
         body: JSON.stringify(body),
       }
     );

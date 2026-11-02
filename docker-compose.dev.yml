@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # Java services share one H2 file database through the java-data volume (AUTO_SERVER=TRUE)
   core-api:
