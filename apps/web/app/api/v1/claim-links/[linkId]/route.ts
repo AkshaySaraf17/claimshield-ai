@@ -1,11 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { identityHeaders } from "@/app/lib/identity";
+import { relayJson } from "@/app/lib/proxy";
 
 const JAVA_API_URL = process.env.JAVA_API_URL || "http://localhost:8080";
-const DEV_HEADERS: Record<string, string> = {
-  "X-Tenant-Id": "00000000-0000-0000-0000-000000000001",
-  "X-User-Id": "dev-user-001",
-  "X-User-Roles": "biller",
-};
 
 export async function DELETE(
   _request: NextRequest,
@@ -15,10 +12,9 @@ export async function DELETE(
   try {
     const resp = await fetch(`${JAVA_API_URL}/api/v1/claim-links/${linkId}`, {
       method: "DELETE",
-      headers: DEV_HEADERS,
+      headers: await identityHeaders(),
     });
-    const data = await resp.json();
-    return NextResponse.json(data, { status: resp.status });
+    return await relayJson(resp);
   } catch (err) {
     return NextResponse.json({ detail: err instanceof Error ? err.message : "error" }, { status: 502 });
   }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { spring, tapScale, focusNudge } from "../lib/motion";
 import { useAuth } from "./AuthProvider";
@@ -182,7 +183,7 @@ function ResultPanel({
           Saved as claim <span className="font-mono">{claimId.slice(0, 8)}</span>
           {appealId && <> with appeal draft <span className="font-mono">{appealId.slice(0, 8)}</span></>}
           {" — visible in "}
-          <a href="/dashboard/claims" className="underline hover:text-ink-700">Claims</a>
+          <Link href="/dashboard/claims" className="underline hover:text-ink-700">Claims</Link>
           {" and "}
           <a href="/dashboard/audit" className="underline hover:text-ink-700">Audit Log</a>
         </div>

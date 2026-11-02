@@ -35,8 +35,14 @@ PYTHONPATH="$PWD" uvicorn services.rules_engine.app.main:app --port 8002
 # 2. agent pipeline (port 8001)
 PYTHONPATH="$PWD" RULES_ENGINE_URL=http://localhost:8002 OLLAMA_MODEL=llama3.2:3b uvicorn services.agents.app.main:app --port 8001
 
-# 3. dev server — claims, appeals, audit on SQLite (port 8003)
-PYTHONPATH="$PWD" uvicorn services.dev_server.main:app --port 8003
+# 3. Java services — run all three from the SAME directory so they share ./data/claimshield (H2)
+#    Start core-api first; it seeds the demo data. Requires Java 17 + Maven.
+(cd services/core-api && mvn -q package -DskipTests)
+(cd services/analytics-service && mvn -q package -DskipTests)
+(cd services/workflow-service && mvn -q package -DskipTests)
+java -jar services/core-api/target/core-api-1.0.0.jar &              # port 8080
+java -jar services/analytics-service/target/analytics-service-0.1.0.jar &  # port 8081
+java -jar services/workflow-service/target/workflow-service-1.0.0.jar &    # port 8082
 
 # 4. frontend (port 3000)
 cd apps/web && npm run dev
@@ -58,7 +64,9 @@ apps/web/                 Next.js 15 dashboard
 services/
   agents/                 LangGraph agent pipeline (parser → specialist → writer)
   rules_engine/           Deterministic billing rules (timely filing, CCI, payer rules)
-  dev_server/             Combined claims/appeals/audit API on SQLite
+  core-api/               Java: claims, appeals, audit, documents, EDI 835 (port 8080)
+  analytics-service/      Java: read-only analytics and reports (port 8081)
+  workflow-service/       Java: routing rules, preferences, escalations (port 8082)
   claims/                 Claims service (Postgres, for production)
   appeals/                Appeals service (Postgres, for production)
   audit/                  Audit service with hash-chained log (Postgres + Kafka)
@@ -66,7 +74,7 @@ packages/py-common/       Shared Python: models, auth, tenancy, events
 infra/compose/            Docker Compose for Postgres, Kafka, Keycloak, etc.
 ```
 
-Local dev uses `dev_server` (SQLite, no Docker). Production uses the individual services with Postgres, Kafka, and Keycloak behind an API gateway.
+Local dev uses the three Java services on a shared H2 file database (no Docker). The Python dev_server was removed in Phase 5. Production uses the individual services with Postgres, Kafka, and Keycloak behind an API gateway.
 
 ## Running tests
 

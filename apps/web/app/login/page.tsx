@@ -65,6 +65,12 @@ export default function LoginPage() {
               >
                 Quick Dev Login
               </button>
+              <button
+                onClick={() => signIn("dev-reviewer-login", { callbackUrl: "/dashboard" })}
+                className="w-full rounded-lg border border-ink-300/40 px-4 py-3 text-sm font-medium text-ink-700 transition hover:bg-ink-950/5"
+              >
+                Dev Login as Reviewer
+              </button>
             </div>
           ) : (
             <form onSubmit={handleAdminLogin} className="space-y-4">
@@ -102,7 +108,7 @@ export default function LoginPage() {
         </div>
 
         <p className="mt-4 text-center text-xs text-ink-500">
-          By signing in, you agree to ClaimShield's Terms of Service
+          By signing in, you agree to ClaimShield&apos;s Terms of Service
         </p>
       </div>
     </div>

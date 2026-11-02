@@ -1,11 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { identityHeaders } from "@/app/lib/identity";
 
 const JAVA_API_URL = process.env.JAVA_API_URL || "http://localhost:8080";
-const DEV_HEADERS: Record<string, string> = {
-  "X-Tenant-Id": "00000000-0000-0000-0000-000000000001",
-  "X-User-Id": "dev-user-001",
-  "X-User-Roles": "biller",
-};
 
 export async function GET(
   _request: NextRequest,
@@ -13,7 +9,7 @@ export async function GET(
 ) {
   const { id } = await params;
   try {
-    const resp = await fetch(`${JAVA_API_URL}/api/v1/claims/${id}/snapshot`, { headers: DEV_HEADERS });
+    const resp = await fetch(`${JAVA_API_URL}/api/v1/claims/${id}/snapshot`, { headers: await identityHeaders() });
     const data = await resp.json();
     return NextResponse.json(data, { status: resp.status });
   } catch (err) {

@@ -1,8 +1,9 @@
 """CloudEvents envelope and transactional outbox helpers."""
 
 from __future__ import annotations
+
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -13,11 +14,12 @@ from sqlalchemy.orm import DeclarativeBase
 
 class CloudEvent(BaseModel):
     """Minimal CloudEvents v1.0 envelope."""
+
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     source: str
     type: str
     subject: str | None = None
-    time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    time: datetime = Field(default_factory=lambda: datetime.now(UTC))
     datacontenttype: str = "application/json"
     data: dict[str, Any] = Field(default_factory=dict)
     tenantid: str | None = None
@@ -29,9 +31,12 @@ class OutboxBase(DeclarativeBase):
 
 class OutboxEntry(OutboxBase):
     """Transactional outbox table — Debezium reads this via CDC."""
+
     __tablename__ = "outbox"
 
-    id = Column(PgUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    id = Column(
+        PgUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
     aggregatetype = Column(String(255), nullable=False)
     aggregateid = Column(String(255), nullable=False)
     type = Column(String(255), nullable=False)

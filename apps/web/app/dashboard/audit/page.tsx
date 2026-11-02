@@ -7,10 +7,10 @@ import { authFetch } from "../../lib/auth";
 interface AuditEntry {
   id: number;
   tenant_id: string;
-  actor_id: string;
+  actor_id: string | null;
   action: string;
   resource_type: string;
-  resource_id: string;
+  resource_id: string | null;
   detail: Record<string, unknown>;
   prev_hash: string;
   entry_hash: string;
@@ -139,10 +139,10 @@ export default function AuditViewerPage() {
                     {entry.action}
                   </span>
                   <span className="text-ink-600">
-                    {entry.resource_type}/{entry.resource_id.slice(0, 8)}
+                    {entry.resource_type}/{(entry.resource_id ?? "").slice(0, 8)}
                   </span>
                   <span className="text-xs text-ink-400">
-                    by {entry.actor_id.slice(0, 8)}
+                    by {(entry.actor_id ?? "").slice(0, 8)}
                   </span>
                 </div>
                 <div className="flex items-center gap-3">

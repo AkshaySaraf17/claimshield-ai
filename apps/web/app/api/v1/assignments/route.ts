@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { identityHeaders } from "@/app/lib/identity";
 
-const WORKFLOW_SERVICE_URL = process.env.WORKFLOW_SERVICE_URL || "http://localhost:8082";
-const DEV_HEADERS: Record<string, string> = {
-  "X-Tenant-Id": "00000000-0000-0000-0000-000000000001",
-  "X-User-Id": "dev-user-001",
-  "X-User-Roles": "biller",
-};
+const JAVA_API_URL = process.env.JAVA_API_URL || "http://localhost:8080";
 
 export async function GET(request: NextRequest) {
   try {
@@ -15,8 +11,8 @@ export async function GET(request: NextRequest) {
       params.set(key, value);
     }
     const resp = await fetch(
-      `${WORKFLOW_SERVICE_URL}/api/v1/assignments?${params.toString()}`,
-      { headers: DEV_HEADERS },
+      `${JAVA_API_URL}/api/v1/assignments?${params.toString()}`,
+      { headers: await identityHeaders() },
     );
     const data = await resp.json();
     return NextResponse.json(data, { status: resp.status });

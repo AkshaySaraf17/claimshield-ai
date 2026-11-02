@@ -7,8 +7,8 @@ ClaimShield AI is a healthcare claims denial management platform. It helps billi
 ## Stack
 
 - **Frontend:** Next.js 15 (App Router) at `apps/web/`, port 3000
-- **Java backend (migrating to):** Spring Boot 3.2.5 / Java 17 microservices under `services/core-api/` (port 8080), planned `services/analytics-service/` (8081) and `services/workflow-service/` (8082)
-- **Python backend (being replaced):** FastAPI monolith at `services/dev_server/main.py` (port 8003, ~5358 lines, 125 endpoints)
+- **Java backend:** Spring Boot 3.2.5 / Java 17 microservices: `services/core-api/` (port 8080), `services/analytics-service/` (8081), `services/workflow-service/` (8082)
+- **Python dev_server:** removed in Phase 5 (2026-11-01); recover from git history (`git show 0363fbb:services/dev_server/main.py`) if you need to check original behaviour
 - **Python AI/ML pipeline (stays):** `services/agent_service/` (port 8001) — NOT migrating
 - **Database:** H2 file database in dev (`./data/claimshield`), shared by all Java services
 - **Auth:** NextAuth with Google OAuth + admin credentials + dev login
@@ -19,12 +19,25 @@ ClaimShield AI is a healthcare claims denial management platform. It helps billi
 # Frontend
 cd apps/web && npm run dev          # port 3000
 
-# Java core-api
-cd services/core-api && mvn spring-boot:run   # port 8080
-
-# Python dev server (still needed until migration complete)
-cd services/dev_server && python main.py      # port 8003
+# Java services: run all three from the same directory so they share ./data/claimshield
+# (start core-api first: it seeds demo data)
+java -jar services/core-api/target/core-api-1.0.0.jar               # port 8080
+java -jar services/analytics-service/target/analytics-service-0.1.0.jar  # port 8081
+java -jar services/workflow-service/target/workflow-service-1.0.0.jar    # port 8082
 ```
+
+## How to test
+
+```bash
+# Java contract tests (each service boots on its own in-memory H2; never touches ./data)
+cd services/core-api && mvn test           # also analytics-service, workflow-service
+# Python tests
+pytest                                     # pytest.ini puts the repo root on the path
+# Frontend
+cd apps/web && npm run lint && npx tsc --noEmit
+```
+
+Test config lives in `src/test/resources/application-test.properties` (profile `test`, activated with `@ActiveProfiles("test")`). Never name it `application.properties` — that would replace the main config (and its SNAKE_CASE setting) instead of layering on it. Run `mvn clean test` after renaming test resources; stale copies in `target/test-classes` still shadow.
 
 ## Critical constraints
 
@@ -44,6 +57,7 @@ cd services/dev_server && python main.py      # port 8003
 - Header-based tenancy: `X-Tenant-Id` / `X-User-Id`
 - Hash-chained audit via AuditService (SHA-256)
 - Constructor injection (no `@Autowired` on fields)
+- JSON is snake_case (`spring.jackson.property-naming-strategy=SNAKE_CASE`); hand-built maps must use snake_case keys too (see `ClaimMapper`). Claim's `payer` field serializes as `payer_name`
 
 ## Handoff protocol
 

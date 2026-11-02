@@ -1,16 +1,35 @@
-version: "3.9"
-
 services:
-  dev-server:
+  # Java services share one H2 file database through the java-data volume (AUTO_SERVER=TRUE)
+  core-api:
     build:
       context: .
-      dockerfile: services/dev_server/Dockerfile
+      dockerfile: services/core-api/Dockerfile
     ports:
-      - "8003:8003"
-    environment:
-      - PYTHONPATH=/app
+      - "8080:8080"
     volumes:
-      - dev-data:/app/data
+      - java-data:/app/data
+
+  analytics-service:
+    build:
+      context: .
+      dockerfile: services/analytics-service/Dockerfile
+    ports:
+      - "8081:8081"
+    volumes:
+      - java-data:/app/data
+    depends_on:
+      - core-api
+
+  workflow-service:
+    build:
+      context: .
+      dockerfile: services/workflow-service/Dockerfile
+    ports:
+      - "8082:8082"
+    volumes:
+      - java-data:/app/data
+    depends_on:
+      - core-api
 
   agents:
     build:
@@ -46,13 +65,17 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - DEV_SERVER_URL=http://dev-server:8003
+      - JAVA_API_URL=http://core-api:8080
+      - ANALYTICS_SERVICE_URL=http://analytics-service:8081
+      - WORKFLOW_SERVICE_URL=http://workflow-service:8082
       - AGENT_PIPELINE_URL=http://agents:8001
       - RULES_ENGINE_URL=http://rules-engine:8002
     depends_on:
-      - dev-server
+      - core-api
+      - analytics-service
+      - workflow-service
       - agents
 
 volumes:
-  dev-data:
+  java-data:
   ollama-data:

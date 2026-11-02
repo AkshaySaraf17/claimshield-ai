@@ -1,5 +1,6 @@
 package com.claimshield.workflow.model;
 
+import com.claimshield.workflow.controller.WorkflowReferenceController;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 import java.util.UUID;
@@ -21,14 +22,28 @@ public class RoutingRule {
     @Column(columnDefinition = "TEXT")
     private String description;
 
-    @Column(name = "match_field", nullable = false, length = 50)
+    // Generic single condition (field/operator/value). Optional: a rule may use the specific conditions below instead
+    @Column(name = "match_field", length = 50)
     private String matchField;
 
-    @Column(name = "match_operator", nullable = false, length = 20)
+    @Column(name = "match_operator", length = 20)
     private String matchOperator;
 
-    @Column(name = "match_value", nullable = false)
+    @Column(name = "match_value")
     private String matchValue;
+
+    // Specific conditions (frontend/Python contract). Every non-null condition must match (AND)
+    @Column(name = "match_payer")
+    private String matchPayer;
+
+    @Column(name = "match_denial_code", length = 20)
+    private String matchDenialCode;
+
+    @Column(name = "min_amount_cents")
+    private Long minAmountCents;
+
+    @Column(name = "max_amount_cents")
+    private Long maxAmountCents;
 
     @Column(name = "assign_to", nullable = false, length = 36)
     private String assignTo;
@@ -65,6 +80,17 @@ public class RoutingRule {
     public void setMatchOperator(String matchOperator) { this.matchOperator = matchOperator; }
     public String getMatchValue() { return matchValue; }
     public void setMatchValue(String matchValue) { this.matchValue = matchValue; }
+    public String getMatchPayer() { return matchPayer; }
+    public void setMatchPayer(String matchPayer) { this.matchPayer = matchPayer; }
+    public String getMatchDenialCode() { return matchDenialCode; }
+    public void setMatchDenialCode(String matchDenialCode) { this.matchDenialCode = matchDenialCode; }
+    public Long getMinAmountCents() { return minAmountCents; }
+    public void setMinAmountCents(Long minAmountCents) { this.minAmountCents = minAmountCents; }
+    public Long getMaxAmountCents() { return maxAmountCents; }
+    public void setMaxAmountCents(Long maxAmountCents) { this.maxAmountCents = maxAmountCents; }
+
+    public String getAssignToName() { return WorkflowReferenceController.teamMemberName(assignTo); }
+
     public String getAssignTo() { return assignTo; }
     public void setAssignTo(String assignTo) { this.assignTo = assignTo; }
     public Integer getPriority() { return priority; }

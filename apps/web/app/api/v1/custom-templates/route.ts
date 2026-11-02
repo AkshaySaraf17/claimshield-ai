@@ -1,16 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { identityHeaders } from "@/app/lib/identity";
 
 const WORKFLOW_SERVICE_URL = process.env.WORKFLOW_SERVICE_URL || "http://localhost:8082";
-const DEV_HEADERS: Record<string, string> = {
-  "X-Tenant-Id": "00000000-0000-0000-0000-000000000001",
-  "X-User-Id": "dev-user-001",
-  "X-User-Roles": "biller",
-};
 
 export async function GET() {
   try {
     const resp = await fetch(`${WORKFLOW_SERVICE_URL}/api/v1/custom-templates`, {
-      headers: DEV_HEADERS,
+      headers: await identityHeaders(),
     });
     const data = await resp.json();
     return NextResponse.json(data, { status: resp.status });
@@ -25,9 +21,17 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+    // The templates page deletes via POST { _action: "delete", id }
+    if (body?._action === "delete" && body.id) {
+      const del = await fetch(`${WORKFLOW_SERVICE_URL}/api/v1/custom-templates/${encodeURIComponent(body.id)}`, {
+        method: "DELETE",
+        headers: await identityHeaders(),
+      });
+      return NextResponse.json({ deleted: del.ok, id: body.id }, { status: del.ok ? 200 : del.status });
+    }
     const resp = await fetch(`${WORKFLOW_SERVICE_URL}/api/v1/custom-templates`, {
       method: "POST",
-      headers: { ...DEV_HEADERS, "Content-Type": "application/json" },
+      headers: { ...(await identityHeaders()), "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     const data = await resp.json();

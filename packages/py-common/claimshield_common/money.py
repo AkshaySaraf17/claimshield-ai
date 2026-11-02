@@ -2,6 +2,7 @@
 transported as integer cents to avoid floating-point rounding errors."""
 
 from __future__ import annotations
+
 from pydantic import GetCoreSchemaHandler
 from pydantic_core import CoreSchema, core_schema
 
@@ -84,7 +85,9 @@ class Cents:
         return core_schema.no_info_plain_validator_function(
             cls._validate,
             serialization=core_schema.plain_serializer_function_ser_schema(
-                lambda v: v.value, info_arg=False, return_schema=core_schema.int_schema()
+                lambda v: v.value,
+                info_arg=False,
+                return_schema=core_schema.int_schema(),
             ),
         )
 

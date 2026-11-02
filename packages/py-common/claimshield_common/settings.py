@@ -1,13 +1,16 @@
 """Shared settings loaded from environment variables."""
 
 from __future__ import annotations
+
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    database_url: str = "postgresql+asyncpg://claimshield:claimshield_dev@localhost:5432/claimshield"
+    database_url: str = (
+        "postgresql+asyncpg://claimshield:claimshield_dev@localhost:5432/claimshield"
+    )
     db_echo: bool = False
     valkey_url: str = "redis://localhost:6379/0"
     kafka_bootstrap_servers: str = "localhost:9094"

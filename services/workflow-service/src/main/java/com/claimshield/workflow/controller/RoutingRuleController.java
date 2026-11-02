@@ -36,9 +36,15 @@ public class RoutingRuleController {
         rule.setTenantId(getTenantId(request));
         rule.setName((String) body.get("name"));
         rule.setDescription((String) body.get("description"));
-        rule.setMatchField((String) body.getOrDefault("match_field", "payer"));
-        rule.setMatchOperator((String) body.getOrDefault("match_operator", "equals"));
-        rule.setMatchValue((String) body.get("match_value"));
+        if (body.get("match_field") != null) {
+            rule.setMatchField((String) body.get("match_field"));
+            rule.setMatchOperator((String) body.getOrDefault("match_operator", "equals"));
+            rule.setMatchValue(String.valueOf(body.get("match_value")));
+        }
+        rule.setMatchPayer(blankToNull(body.get("match_payer")));
+        rule.setMatchDenialCode(blankToNull(body.get("match_denial_code")));
+        if (body.get("min_amount_cents") instanceof Number n) rule.setMinAmountCents(n.longValue());
+        if (body.get("max_amount_cents") instanceof Number n) rule.setMaxAmountCents(n.longValue());
         rule.setAssignTo((String) body.get("assign_to"));
         if (body.containsKey("priority")) rule.setPriority(((Number) body.get("priority")).intValue());
         rule.setCreatedBy(getUserId(request));
@@ -61,5 +67,11 @@ public class RoutingRuleController {
     private String getUserId(HttpServletRequest request) {
         String h = request.getHeader("X-User-Id");
         return h != null ? h : "dev-user-001";
+    }
+
+    private String blankToNull(Object value) {
+        if (value == null) return null;
+        String text = value.toString().trim();
+        return text.isEmpty() ? null : text;
     }
 }

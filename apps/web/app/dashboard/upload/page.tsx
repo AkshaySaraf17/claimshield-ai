@@ -89,7 +89,7 @@ export default function UploadPage() {
         <p className="font-mono text-xs uppercase tracking-wide text-ink-500">Documents</p>
         <h1 className="mt-1 font-display text-3xl font-semibold text-ink-950">Upload Document</h1>
         <p className="mt-1 text-sm text-ink-500">
-          Upload denial letters, EOBs, or any document. We'll extract the text automatically.
+          Upload denial letters, EOBs, or any document. We&apos;ll extract the text automatically.
         </p>
       </header>
 

@@ -1,6 +1,7 @@
 """SHA-256 hash chain for audit integrity."""
 
 from __future__ import annotations
+
 import hashlib
 import json
 

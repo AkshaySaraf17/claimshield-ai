@@ -21,10 +21,10 @@ interface DailyCount {
 
 interface RecentEntry {
   id: number;
-  actor_id: string;
+  actor_id: string | null;
   action: string;
   resource_type: string;
-  resource_id: string;
+  resource_id: string | null;
   detail: string | null;
   created_at: string;
 }
@@ -221,7 +221,7 @@ export default function ActivityPage() {
                     {e.action}
                   </span>
                   <span className="text-xs text-ink-600 truncate">
-                    {e.resource_type} {e.resource_id.slice(0, 8)}
+                    {e.resource_type} {(e.resource_id ?? "").slice(0, 8)}
                   </span>
                   <span className="text-xs text-ink-400">{e.actor_id}</span>
                 </div>

@@ -16,7 +16,7 @@ interface Stats {
     id: number;
     action: string;
     resource_type: string;
-    resource_id: string;
+    resource_id: string | null;
     actor_id: string;
     created_at: string;
   }[];
@@ -211,7 +211,7 @@ export default function DashboardOverview() {
                 </span>
                 <div className="min-w-0">
                   <p className="truncate font-mono text-xs text-ink-600">
-                    {a.resource_type}/{a.resource_id.slice(0, 8)}
+                    {a.resource_type}/{(a.resource_id ?? "").slice(0, 8)}
                   </p>
                   <p className="text-[10px] text-ink-400">
                     {a.created_at

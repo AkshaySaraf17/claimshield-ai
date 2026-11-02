@@ -97,6 +97,7 @@ public class PayerAnalyticsController {
                 m.put("total_recovered_cents", 0L); m.put("statuses", new LinkedHashMap<>());
                 m.put("appeals_filed", 0); m.put("appeals_won", 0); m.put("appeals_lost", 0);
                 m.put("_appeal_days", new ArrayList<Integer>());
+                m.put("_denial_codes", new LinkedHashMap<String, Integer>());
                 return m;
             });
             Map<String, Object> pd = data.get(payer);
@@ -107,6 +108,12 @@ public class PayerAnalyticsController {
             @SuppressWarnings("unchecked")
             Map<String, Integer> statuses = (Map<String, Integer>) pd.get("statuses");
             statuses.merge(c.getStatus() != null ? c.getStatus() : "unknown", 1, Integer::sum);
+
+            if (c.getDenialCode() != null) {
+                @SuppressWarnings("unchecked")
+                Map<String, Integer> codes = (Map<String, Integer>) pd.get("_denial_codes");
+                codes.merge(c.getDenialCode(), 1, Integer::sum);
+            }
 
             List<Appeal> claimAppeals = appealByClaim.getOrDefault(c.getId(), List.of());
             pd.put("appeals_filed", (int) pd.get("appeals_filed") + claimAppeals.size());
@@ -133,6 +140,13 @@ public class PayerAnalyticsController {
             pd.put("win_rate", decided > 0 ? Math.round((double) aw / decided * 1000.0) / 10.0 : null);
             long denied = (long) pd.get("total_denied_cents"), recovered = (long) pd.get("total_recovered_cents");
             pd.put("recovery_rate", denied > 0 ? Math.round((double) recovered / denied * 1000.0) / 10.0 : null);
+            @SuppressWarnings("unchecked")
+            Map<String, Integer> codes = (Map<String, Integer>) pd.remove("_denial_codes");
+            pd.put("top_denial_codes", codes.entrySet().stream()
+                    .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
+                    .limit(5)
+                    .map(e -> Map.<String, Object>of("code", e.getKey(), "count", e.getValue()))
+                    .toList());
             result.add(pd);
         }
         result.sort(Comparator.<Map<String, Object>>comparingLong(m -> (long) m.get("total_denied_cents")).reversed());

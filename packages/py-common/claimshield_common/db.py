@@ -9,7 +9,9 @@ from .settings import get_settings
 
 def create_engine():
     s = get_settings()
-    return create_async_engine(s.database_url, echo=s.db_echo, pool_size=5, max_overflow=10)
+    return create_async_engine(
+        s.database_url, echo=s.db_echo, pool_size=5, max_overflow=10
+    )
 
 
 def create_session_factory(engine=None):

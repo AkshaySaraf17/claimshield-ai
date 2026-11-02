@@ -1,16 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { identityHeaders } from "@/app/lib/identity";
 
 const WORKFLOW_SERVICE_URL = process.env.WORKFLOW_SERVICE_URL || "http://localhost:8082";
-const DEV_HEADERS: Record<string, string> = {
-  "X-Tenant-Id": "00000000-0000-0000-0000-000000000001",
-  "X-User-Id": "dev-user-001",
-  "X-User-Roles": "biller",
-};
 
 export async function GET() {
   try {
     const resp = await fetch(`${WORKFLOW_SERVICE_URL}/api/v1/routing-rules`, {
-      headers: DEV_HEADERS,
+      headers: await identityHeaders(),
     });
     const data = await resp.json();
     return NextResponse.json(data, { status: resp.status });
@@ -27,7 +23,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const resp = await fetch(`${WORKFLOW_SERVICE_URL}/api/v1/routing-rules`, {
       method: "POST",
-      headers: { ...DEV_HEADERS, "Content-Type": "application/json" },
+      headers: { ...(await identityHeaders()), "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     const data = await resp.json();
