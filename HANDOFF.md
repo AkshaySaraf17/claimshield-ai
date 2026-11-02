@@ -1,5 +1,5 @@
 # Handoff
-Last updated: 2026-11-01 | Branch: main | Last commit: e2b0732 (pending new commit)
+Last updated: 2026-11-01 | Branch: main | Last commit: d07a077 (pending new commit)
 
 ## Project summary
 ClaimShield AI is a healthcare claims denial management platform with 92 dashboard pages (Next.js 15, port 3000), a Java Spring Boot core-api (port 8080) with 15 entities, 14 controllers, and ~50 endpoints, a Python FastAPI monolith being replaced (port 8003), and a Python AI/ML agent service (port 8001, not migrating). Monorepo: `apps/web/` (frontend), `services/core-api/` (Java), `services/dev_server/` (Python, being replaced), `services/agent_service/` (Python AI, stays).
@@ -36,7 +36,8 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 
 ### In progress
 - **Phase 1 COMPLETE** — all entities, controllers, services, EDI parser, and claim operations ported to Java
-- **Phase 2 next** — create workflow-service (port 8082)
+- **Phase 2 COMPLETE** — workflow-service (port 8082) created with 8 entities, 8 repositories, 8 controllers, ~25 endpoints, seed data
+- **Phase 3 next** — create analytics-service (port 8081)
 - No files are half-written; everything compiles and runs
 
 ### Broken or blocked
@@ -59,11 +60,7 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 **Step 1: Port EDI 835 parser to Java** — DONE
 **Step 2: Add remaining claim operations** — DONE
 
-**Step 3: Create workflow-service (port 8082) — Phase 2**
-- New Spring Boot project at `services/workflow-service/`
-- 8 entities: RoutingRule, UserPreference, NotificationPreference, CustomTemplate, PayerContact, DashboardBookmark, ClaimWatchlist + reads ClaimAssignment from shared DB
-- ~30 endpoints for routing, assignments, preferences, contacts, watchlists, bookmarks, alerts, escalations
-- Done when: `mvn clean package` passes and endpoints return data
+**Step 3: Create workflow-service (port 8082) — Phase 2** — DONE
 
 **Step 4: Create analytics-service (port 8081) — Phase 3**
 - New Spring Boot project at `services/analytics-service/`
@@ -108,6 +105,13 @@ cd services/dev_server && python main.py  # port 8003
 ```
 
 ## History log
+
+### 2026-11-01 — Phase 2 complete: workflow-service created
+- Created `services/workflow-service/` Spring Boot project on port 8082
+- 8 JPA entities: RoutingRule, UserPreference, NotificationPreference, CustomTemplate, PayerContact, DashboardBookmark, ClaimWatchlist, Escalation
+- 8 repositories, 8 controllers (~25 endpoints): routing-rules CRUD, preferences get/set, notification preferences, custom-templates CRUD, payer-contacts CRUD, watchlist CRUD, bookmarks CRUD, escalations create/list/resolve, team-members, roles, alerts, health
+- DataSeeder seeds 4 routing rules, 2 templates, 3 payer contacts, 4 user preferences, 3 bookmarks
+- All endpoints verified with curl
 
 ### 2026-11-01 — Phase 1 complete: EDI 835 parser + remaining claim ops
 - Ported Python EDI 835 X12 parser to Java (`Edi835ParserService.java`) — handles ISA/GS/ST/BPR/TRN/N1/CLP/NM1/SVC/CAS/DTM/LQ segments, service adjustments, remark codes, all amounts in cents
