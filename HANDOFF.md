@@ -1,5 +1,5 @@
 # Handoff
-Last updated: 2026-11-01 | Branch: phase5/java-api-parity | Last commit: home-page navigation crash fix (this branch)
+Last updated: 2026-11-01 | Branch: phase6/java-contract-tests (stacked on phase5/java-api-parity) | Last commit: Java tests in CI
 
 ## Project summary
 ClaimShield AI is a healthcare claims denial management platform with 92 dashboard pages (Next.js 15, port 3000), a Java Spring Boot core-api (port 8080) with 15 entities, 17 controllers, and ~75 endpoints, Java analytics-service (8081) and workflow-service (8082), and a Python AI/ML agent service (port 8001, not migrating). The Python FastAPI dev_server (port 8003) was removed in Phase 5. Monorepo: `apps/web/` (frontend), `services/core-api/`, `services/analytics-service/`, `services/workflow-service/` (Java), `services/agent_service/` (Python AI, stays).
@@ -80,6 +80,12 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 
 **Step 10: Role check on appeal approval** — DONE. `/api/v1/appeals/{id}/approve` returns 403 unless `X-User-Roles` contains reviewer, manager or admin; `approved_by` is always the authenticated caller (request-body value ignored). Proxy routes now forward the real NextAuth session identity (`apps/web/app/lib/identity.ts`) instead of the hardcoded dev-user-001/biller. "Dev Login as Reviewer" (dev-user-003, role reviewer) added to `/login`
 
+**Step 11: Java contract test suite — Phase 6** — DONE on branch `phase6/java-contract-tests` (stacked on PR #1's branch). 23 tests: core-api 18 (`AppealApprovalTest`, `AuditChainTest`, `AutoRouteTest`, `BatchAndMergeTest`, `ClaimJsonContractTest`, `ResponseShapeTest`), analytics-service 2 (`AnalyticsContractTest`), workflow-service 3 (`WorkflowContractTest`)
+
+**Step 12: Run Java tests in CI** — DONE. `.github/workflows/ci.yml` has a `java-test` job (matrix over core-api, analytics-service, workflow-service; Temurin 17; `mvn -B test`). CI now runs on every PR (not only PRs into `main`) so stacked PRs like #2 are checked. Frontend job now runs `npm run lint` instead of the deprecated `next lint`. Pushing workflow changes needed the GitHub `workflow` scope (granted 2026-11-01 via `gh auth refresh -s workflow`)
+
+**Step 13 (suggested): dev console warnings** — missing list `key` props in `dashboard/code-lookup`, `letter-history`, `roles`; a `NaN` rendered as text (seen during the page sweep)
+
 ## How to verify
 
 ```bash
@@ -110,6 +116,14 @@ cd apps/web && npm run dev  # port 3000
 ```
 
 ## History log
+
+### 2026-11-01 — Phase 6: Java contract tests (branch phase6/java-contract-tests)
+- **Why:** the 3 Java services had zero tests; every bug fixed this session was a frontend↔Java contract mismatch (field names, missing keys, response shapes) that a test would have caught
+- **Setup:** `@SpringBootTest` + MockMvc per service, profile `test` (`src/test/resources/application-test.properties`) → in-memory H2 with create-drop. core-api tests call the API with the same identity headers the Next.js proxy forwards (`ApiTestSupport`); `routing-rules.sql` creates workflow-service's table for core-api's auto-route tests. analytics-service gained `spring-boot-starter-test`
+- **Covers:** snake_case + `payer_name` on claims (no camelCase keys); approval gate (biller/anonymous 403, approver = caller, double-approve 409, send-before-approve 409); audit chain valid after writes and detects an edited entry (`entry_hash_mismatch`); batch-transition `new_status` + counts + legacy `status`; merge contract; auto-route priority + AND conditions + fallthrough; prevention-tips grouping with `source`; snapshot tags/costs/attachments; tag delete 204; deterministic prediction with `source`; analytics `top_denial_codes` and stats; workflow notification prefs (flat map, defaults, per-user), routing rule specific conditions + `assign_to_name`, template `sections`/`source`
+- **Proven to catch regressions:** temporarily removing the approval role check failed `AppealApprovalTest`; renaming `payer_name` → `payerName` failed `ClaimJsonContractTest` (both reverted)
+- **Gotcha found:** a test `application.properties` *replaces* the main one (dropping SNAKE_CASE); now a `test` profile. Stale files in `target/test-classes` survive `mvn test` — use `mvn clean test`
+- Added to CI in the follow-up commit (Step 12)
 
 ### 2026-11-01 — Fix crash when leaving the home page (NotFoundError: removeChild)
 - **Symptom:** clicking "Open the workbench" (any client-side navigation away from `/`) threw `Runtime NotFoundError` from `removeChild` in `section` ("The object can not be found here." in Safari)

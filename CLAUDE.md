@@ -26,6 +26,19 @@ java -jar services/analytics-service/target/analytics-service-0.1.0.jar  # port 
 java -jar services/workflow-service/target/workflow-service-1.0.0.jar    # port 8082
 ```
 
+## How to test
+
+```bash
+# Java contract tests (each service boots on its own in-memory H2; never touches ./data)
+cd services/core-api && mvn test           # also analytics-service, workflow-service
+# Python tests
+pytest                                     # pytest.ini puts the repo root on the path
+# Frontend
+cd apps/web && npm run lint && npx tsc --noEmit
+```
+
+Test config lives in `src/test/resources/application-test.properties` (profile `test`, activated with `@ActiveProfiles("test")`). Never name it `application.properties` — that would replace the main config (and its SNAKE_CASE setting) instead of layering on it. Run `mvn clean test` after renaming test resources; stale copies in `target/test-classes` still shadow.
+
 ## Critical constraints
 
 - **Deterministic code decides** (dates, money, codes, bundling); LLMs only draft/explain
