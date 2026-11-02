@@ -344,41 +344,54 @@ public class ClaimController {
 
     @PostMapping("/batch-transition")
     @Transactional
-    public List<Map<String, Object>> batchTransition(@RequestBody Map<String, Object> body,
-                                                     HttpServletRequest request) {
+    public Map<String, Object> batchTransition(@RequestBody Map<String, Object> body,
+                                               HttpServletRequest request) {
         String tenantId = getTenantId(request);
         String userId = getUserId(request);
-        String newStatus = (String) body.get("status");
+        // Pages send new_status (Python contract); status is accepted too
+        String newStatus = (String) (body.get("new_status") != null ? body.get("new_status") : body.get("status"));
         @SuppressWarnings("unchecked")
-        List<String> claimIds = (List<String>) body.get("claim_ids");
+        List<String> claimIds = (List<String>) body.getOrDefault("claim_ids", List.of());
 
         List<Map<String, Object>> results = new ArrayList<>();
         for (String cid : claimIds) {
-            claimRepository.findById(cid).ifPresentOrElse(claim -> {
-                Set<String> allowed = ReferenceDataService.ALLOWED_TRANSITIONS.getOrDefault(claim.getStatus(), Set.of());
-                if (allowed.contains(newStatus)) {
-                    String oldStatus = claim.getStatus();
-                    claim.setStatus(newStatus);
-                    claimRepository.save(claim);
+            Optional<Claim> found = claimRepository.findById(cid).filter(c -> tenantId.equals(c.getTenantId()));
+            if (found.isEmpty()) {
+                results.add(Map.of("id", cid, "claim_id", cid, "success", false, "error", "not found"));
+                continue;
+            }
+            Claim claim = found.get();
+            Set<String> allowed = ReferenceDataService.ALLOWED_TRANSITIONS.getOrDefault(claim.getStatus(), Set.of());
+            if (newStatus == null || !allowed.contains(newStatus)) {
+                results.add(Map.of("id", cid, "claim_id", cid, "success", false,
+                        "error", "cannot transition from " + claim.getStatus() + " to " + newStatus));
+                continue;
+            }
+            String oldStatus = claim.getStatus();
+            claim.setStatus(newStatus);
+            claimRepository.save(claim);
 
-                    ClaimStatusHistory history = new ClaimStatusHistory();
-                    history.setTenantId(tenantId);
-                    history.setClaimId(cid);
-                    history.setFromStatus(oldStatus);
-                    history.setToStatus(newStatus);
-                    history.setChangedBy(userId);
-                    statusHistoryRepository.save(history);
+            ClaimStatusHistory history = new ClaimStatusHistory();
+            history.setTenantId(tenantId);
+            history.setClaimId(cid);
+            history.setFromStatus(oldStatus);
+            history.setToStatus(newStatus);
+            history.setChangedBy(userId);
+            history.setReason("batch");
+            statusHistoryRepository.save(history);
 
-                    auditService.writeAudit(tenantId, userId, "claim.status_changed", "claim", cid,
-                            "{\"old_status\":\"" + oldStatus + "\",\"new_status\":\"" + newStatus + "\"}");
-                    results.add(Map.of("claim_id", cid, "success", true, "new_status", newStatus));
-                } else {
-                    results.add(Map.of("claim_id", cid, "success", false, "error",
-                            "Cannot transition from '" + claim.getStatus() + "' to '" + newStatus + "'"));
-                }
-            }, () -> results.add(Map.of("claim_id", cid, "success", false, "error", "Not found")));
+            auditService.writeAudit(tenantId, userId, "claim.status_changed", "claim", cid,
+                    "{\"old_status\":\"" + oldStatus + "\",\"new_status\":\"" + newStatus + "\",\"source\":\"batch\"}");
+            results.add(Map.of("id", cid, "claim_id", cid, "success", true, "new_status", newStatus));
         }
-        return results;
+
+        List<Map<String, Object>> errors = results.stream().filter(r -> !Boolean.TRUE.equals(r.get("success"))).toList();
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("results", results);
+        response.put("transitioned", results.size() - errors.size());
+        response.put("failed", errors.size());
+        response.put("errors", errors);
+        return response;
     }
 
     @GetMapping("/duplicates")
@@ -600,39 +613,68 @@ public class ClaimController {
     }
 
     @PostMapping("/merge")
+    @Transactional
     public ResponseEntity<?> mergeClaims(@RequestBody Map<String, Object> body,
-                                          HttpServletRequest request) {
+                                         HttpServletRequest request) {
         String tenantId = getTenantId(request);
         String userId = getUserId(request);
-        String primaryId = (String) body.get("primary_id");
-        String secondaryId = (String) body.get("secondary_id");
+        // Python contract: primary_claim_id + secondary_claim_ids[]; primary_id + secondary_id also accepted
+        String primaryId = (String) (body.get("primary_claim_id") != null ? body.get("primary_claim_id") : body.get("primary_id"));
+        List<String> secondaryIds = new ArrayList<>();
+        if (body.get("secondary_claim_ids") instanceof List<?> ids) ids.forEach(i -> secondaryIds.add(String.valueOf(i)));
+        if (body.get("secondary_id") != null) secondaryIds.add(body.get("secondary_id").toString());
 
-        Optional<Claim> primaryOpt = claimRepository.findById(primaryId).filter(c -> c.getTenantId().equals(tenantId));
-        Optional<Claim> secondaryOpt = claimRepository.findById(secondaryId).filter(c -> c.getTenantId().equals(tenantId));
-
-        if (primaryOpt.isEmpty() || secondaryOpt.isEmpty())
-            return ResponseEntity.notFound().build();
-
+        Optional<Claim> primaryOpt = Optional.ofNullable(primaryId).flatMap(claimRepository::findById)
+                .filter(c -> c.getTenantId().equals(tenantId));
+        if (primaryOpt.isEmpty())
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("detail", "Primary claim not found"));
         Claim primary = primaryOpt.get();
-        Claim secondary = secondaryOpt.get();
+        String primaryLabel = primary.getClaimNumber() != null ? primary.getClaimNumber() : primary.getId();
 
-        if (primary.getAmountDeniedCents() == null && secondary.getAmountDeniedCents() != null)
-            primary.setAmountDeniedCents(secondary.getAmountDeniedCents());
-        if (primary.getDenialCode() == null && secondary.getDenialCode() != null)
-            primary.setDenialCode(secondary.getDenialCode());
-        if (primary.getDenialReason() == null && secondary.getDenialReason() != null)
-            primary.setDenialReason(secondary.getDenialReason());
-        if (primary.getPatientId() == null && secondary.getPatientId() != null)
-            primary.setPatientId(secondary.getPatientId());
+        List<String> mergedIds = new ArrayList<>();
+        for (String secId : secondaryIds) {
+            Optional<Claim> secOpt = claimRepository.findById(secId).filter(c -> c.getTenantId().equals(tenantId));
+            if (secOpt.isEmpty() || secId.equals(primary.getId())) continue;
+            Claim sec = secOpt.get();
+            String secLabel = sec.getClaimNumber() != null ? sec.getClaimNumber() : sec.getId();
 
+            if (primary.getAmountDeniedCents() == null) primary.setAmountDeniedCents(sec.getAmountDeniedCents());
+            if (primary.getDenialCode() == null) primary.setDenialCode(sec.getDenialCode());
+            if (primary.getDenialReason() == null) primary.setDenialReason(sec.getDenialReason());
+            if (primary.getPatientId() == null) primary.setPatientId(sec.getPatientId());
+            primary.setRawClinicalNotes(appendMerged(primary.getRawClinicalNotes(), sec.getRawClinicalNotes(), secLabel));
+            primary.setRawDenialText(appendMerged(primary.getRawDenialText(), sec.getRawDenialText(), secLabel));
+
+            sec.setStatus("cancelled");
+            claimRepository.save(sec);
+            addNote(tenantId, sec.getId(), userId, "Merged into " + primaryLabel);
+            mergedIds.add(sec.getId());
+        }
         claimRepository.save(primary);
-        secondary.setStatus("merged");
-        claimRepository.save(secondary);
+        addNote(tenantId, primary.getId(), userId, "Absorbed " + mergedIds.size() + " claim(s): "
+                + String.join(", ", mergedIds.subList(0, Math.min(5, mergedIds.size()))));
+        auditService.writeAudit(tenantId, userId, "claim.merged", "claim", primary.getId(),
+                "{\"merged_ids\":[" + mergedIds.stream().map(i -> "\"" + i + "\"").collect(Collectors.joining(",")) + "]}");
 
-        auditService.writeAudit(tenantId, userId, "claim.merged", "claim", primaryId,
-                "{\"merged_from\":\"" + secondaryId + "\"}");
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("primary_id", primary.getId());
+        response.put("merged_count", mergedIds.size());
+        response.put("merged_ids", mergedIds);
+        return ResponseEntity.ok(response);
+    }
 
-        return ResponseEntity.ok(Map.of("primary", claimToMap(primary), "secondary_status", "merged"));
+    private String appendMerged(String existing, String incoming, String fromLabel) {
+        if (incoming == null || incoming.equals(existing)) return existing;
+        return (existing != null ? existing : "") + "\n\n--- merged from " + fromLabel + " ---\n" + incoming;
+    }
+
+    private void addNote(String tenantId, String claimId, String userId, String content) {
+        ClaimNote note = new ClaimNote();
+        note.setTenantId(tenantId);
+        note.setClaimId(claimId);
+        note.setAuthorId(userId);
+        note.setContent(content);
+        noteRepository.save(note);
     }
 
     @GetMapping("/{id}/snapshot")
@@ -852,7 +894,8 @@ public class ClaimController {
 
         // routing_rules is owned by workflow-service; read it from the shared DB (highest priority wins)
         List<Map<String, Object>> rules = jdbcTemplate.queryForList(
-                "SELECT id, name, match_field, match_operator, match_value, assign_to FROM routing_rules " +
+                "SELECT id, name, match_field, match_operator, match_value, match_payer, match_denial_code, " +
+                "min_amount_cents, max_amount_cents, assign_to FROM routing_rules " +
                 "WHERE tenant_id = ? AND is_active = TRUE ORDER BY priority DESC", tenantId);
 
         Map<String, Object> matched = rules.stream().filter(r -> ruleMatches(r, claim)).findFirst().orElse(null);
@@ -988,13 +1031,25 @@ public class ClaimController {
                 "id", saved.getId(), "link_type", linkType, "claim_id_a", id, "claim_id_b", otherId));
     }
 
+    /** A rule matches when every condition it sets matches (specific conditions AND the generic field/operator/value). */
     private boolean ruleMatches(Map<String, Object> rule, Claim claim) {
-        String field = String.valueOf(col(rule, "match_field"));
-        String op = String.valueOf(col(rule, "match_operator"));
-        String value = String.valueOf(col(rule, "match_value"));
+        long amount = claim.getAmountDeniedCents() != null ? claim.getAmountDeniedCents() : 0;
 
+        Object payer = col(rule, "match_payer");
+        if (payer != null && !payer.toString().equalsIgnoreCase(claim.getPayer() != null ? claim.getPayer() : "")) return false;
+        Object code = col(rule, "match_denial_code");
+        if (code != null && !code.toString().equals(claim.getDenialCode())) return false;
+        if (col(rule, "min_amount_cents") instanceof Number min && amount < min.longValue()) return false;
+        if (col(rule, "max_amount_cents") instanceof Number max && amount > max.longValue()) return false;
+
+        Object field = col(rule, "match_field");
+        if (field == null) return true;
+        return genericConditionMatches(field.toString(), String.valueOf(col(rule, "match_operator")),
+                String.valueOf(col(rule, "match_value")), claim, amount);
+    }
+
+    private boolean genericConditionMatches(String field, String op, String value, Claim claim, long amount) {
         if ("amount_denied_cents".equals(field)) {
-            long amount = claim.getAmountDeniedCents() != null ? claim.getAmountDeniedCents() : 0;
             long threshold;
             try { threshold = Long.parseLong(value); } catch (NumberFormatException e) { return false; }
             return switch (op) {

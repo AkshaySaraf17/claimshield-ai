@@ -111,7 +111,12 @@ export default function BatchActionsPage() {
 
     const refreshResp = await fetch("/api/v1/claims");
     const refreshData = await refreshResp.json();
-    setClaims(Array.isArray(refreshData) ? refreshData : refreshData.items || []);
+    const refreshed: ClaimRow[] = Array.isArray(refreshData) ? refreshData : refreshData.items || [];
+    setClaims(refreshed);
+    // The status dropdown only lists statuses that still exist; don't leave it filtering on a vanished one
+    if (filterStatus !== "all" && !refreshed.some((c) => c.status === filterStatus)) {
+      setFilterStatus("all");
+    }
   }
 
   const statuses = [...new Set(claims.map((c) => c.status))].sort();

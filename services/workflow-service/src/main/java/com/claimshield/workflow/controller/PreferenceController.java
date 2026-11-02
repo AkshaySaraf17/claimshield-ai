@@ -5,9 +5,10 @@ import com.claimshield.workflow.model.NotificationPreference;
 import com.claimshield.workflow.repository.UserPreferenceRepository;
 import com.claimshield.workflow.repository.NotificationPreferenceRepository;
 import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,34 +53,41 @@ public class PreferenceController {
         return Map.of("key", key, "value", pref.getPrefValue());
     }
 
+    // Frontend contract (ported from Python): a flat map of notif_* keys to "true"/"false", with defaults
+    private static final List<String> NOTIFICATION_KEYS = List.of(
+            "notif_deadline_warning", "notif_status_change", "notif_appeal_approved",
+            "notif_escalation", "notif_assignment", "notif_payer_response");
+
     @GetMapping("/notifications/preferences")
-    public List<NotificationPreference> getNotificationPrefs(HttpServletRequest request) {
-        return notifRepository.findByTenantIdAndUserId(getTenantId(request), getUserId(request));
+    public Map<String, String> getNotificationPrefs(HttpServletRequest request) {
+        Map<String, String> result = new LinkedHashMap<>();
+        NOTIFICATION_KEYS.forEach(k -> result.put(k, "true"));
+        notifRepository.findByTenantIdAndUserId(getTenantId(request), getUserId(request)).stream()
+                .filter(p -> p.getEventType() != null && p.getEventType().startsWith("notif_"))
+                .forEach(p -> result.put(p.getEventType(), String.valueOf(Boolean.TRUE.equals(p.getIsEnabled()))));
+        return result;
     }
 
     @PutMapping("/notifications/preferences")
-    public ResponseEntity<?> updateNotificationPrefs(@RequestBody Map<String, Object> body,
-                                                      HttpServletRequest request) {
+    @Transactional
+    public Map<String, String> updateNotificationPrefs(@RequestBody Map<String, Object> body,
+                                                       HttpServletRequest request) {
         String tenantId = getTenantId(request);
         String userId = getUserId(request);
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> items = (List<Map<String, Object>>) body.get("preferences");
-        if (items == null) return ResponseEntity.badRequest().body(Map.of("error", "missing preferences array"));
+        Map<String, NotificationPreference> existing = new HashMap<>();
+        notifRepository.findByTenantIdAndUserId(tenantId, userId).forEach(p -> existing.put(p.getEventType(), p));
 
-        List<NotificationPreference> existing = notifRepository.findByTenantIdAndUserId(tenantId, userId);
-        notifRepository.deleteAll(existing);
-
-        for (Map<String, Object> item : items) {
-            NotificationPreference np = new NotificationPreference();
+        body.forEach((key, value) -> {
+            if (!key.startsWith("notif_")) return;
+            NotificationPreference np = existing.getOrDefault(key, new NotificationPreference());
             np.setTenantId(tenantId);
             np.setUserId(userId);
-            np.setEventType((String) item.get("event_type"));
-            np.setChannel((String) item.getOrDefault("channel", "in_app"));
-            np.setIsEnabled(item.containsKey("is_enabled") ? (Boolean) item.get("is_enabled") : true);
+            np.setEventType(key);
+            if (np.getChannel() == null) np.setChannel("in_app");
+            np.setIsEnabled("true".equalsIgnoreCase(String.valueOf(value)));
             notifRepository.save(np);
-        }
-
-        return ResponseEntity.ok(notifRepository.findByTenantIdAndUserId(tenantId, userId));
+        });
+        return getNotificationPrefs(request);
     }
 
     private String getTenantId(HttpServletRequest request) {

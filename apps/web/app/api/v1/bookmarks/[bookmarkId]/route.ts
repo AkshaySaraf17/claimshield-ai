@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { identityHeaders } from "@/app/lib/identity";
+import { relayJson } from "@/app/lib/proxy";
 
 const WORKFLOW_SERVICE_URL = process.env.WORKFLOW_SERVICE_URL || "http://localhost:8082";
 
@@ -13,8 +14,7 @@ export async function DELETE(
       method: "DELETE",
       headers: await identityHeaders(),
     });
-    const data = await resp.json();
-    return NextResponse.json(data, { status: resp.status });
+    return await relayJson(resp);
   } catch (err) {
     return NextResponse.json({ detail: err instanceof Error ? err.message : "error" }, { status: 502 });
   }

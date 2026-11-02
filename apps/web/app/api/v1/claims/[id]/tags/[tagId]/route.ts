@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { identityHeaders } from "@/app/lib/identity";
+import { relayJson } from "@/app/lib/proxy";
 
 const JAVA_API_URL = process.env.JAVA_API_URL || "http://localhost:8080";
 
@@ -13,8 +14,7 @@ export async function DELETE(
       method: "DELETE",
       headers: await identityHeaders(),
     });
-    const data = await resp.json();
-    return NextResponse.json(data, { status: resp.status });
+    return await relayJson(resp);
   } catch (err) {
     return NextResponse.json(
       { detail: err instanceof Error ? err.message : "Failed to reach dev server" },

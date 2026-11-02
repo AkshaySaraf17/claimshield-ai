@@ -1,5 +1,5 @@
 # Handoff
-Last updated: 2026-11-01 | Branch: phase5/java-api-parity | Last commit: CI fixes (this branch)
+Last updated: 2026-11-01 | Branch: phase5/java-api-parity | Last commit: Step 9 write-path fixes + sign-in required for writes (this branch)
 
 ## Project summary
 ClaimShield AI is a healthcare claims denial management platform with 92 dashboard pages (Next.js 15, port 3000), a Java Spring Boot core-api (port 8080) with 15 entities, 17 controllers, and ~75 endpoints, Java analytics-service (8081) and workflow-service (8082), and a Python AI/ML agent service (port 8001, not migrating). The Python FastAPI dev_server (port 8003) was removed in Phase 5. Monorepo: `apps/web/` (frontend), `services/core-api/`, `services/analytics-service/`, `services/workflow-service/` (Java), `services/agent_service/` (Python AI, stays).
@@ -44,7 +44,7 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 
 ### Broken or blocked
 - **Unverified:** `docker-compose up` of the full file (images and shared volume were verified with `docker run`, see Step 8)
-- **Unverified:** write actions on most pages have not been clicked by hand (see Step 9). Every page renders without runtime errors
+- **Partly verified:** write actions are verified via exact-payload replay through the proxy; only Batch Actions and Notification Preferences were clicked by hand in the browser
 - **Known gap (pre-existing):** `ReferenceDataService.generateAppealLetter` uses `getOrDefault` on a map that contains null values, so missing fields print as "null" in letters instead of the default text
 
 ## Key decisions and context
@@ -76,8 +76,7 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 
 **Step 8: Verify Docker compose stack** — DONE. All 3 images build from their Dockerfiles; run as containers on one network with a shared `/app/data` volume they start cleanly and share the H2 file (analytics `/api/v1/stats` shows core-api's 10 seeded claims; core-api auto-route reads workflow-service's `routing_rules`). Checked with `docker run` on host ports 18080-18082 because host 8080 was taken by another local project; the compose file itself was only validated with `docker-compose config`, not `up`
 
-**Step 9: Click through dashboard pages that use write endpoints** — PARTLY DONE. All 94 dashboard pages (92 static + a claim detail + an appeal preview) render with no runtime errors (automated iframe sweep with a dev session). Appeal draft → approve → send verified through the Next.js proxy with real sessions. Still not clicked by hand: tag manager, claim links, assignments, auto-router, batch appeals, escalations, template create/delete
-- Done when: each action succeeds in the UI and shows in the audit log
+**Step 9: Exercise every dashboard write action** — DONE. All 53 write calls made by dashboard pages were inventoried; 36 replay checks (one per distinct action, using each page's exact request body) pass through the Next.js proxy as a signed-in reviewer, each verified by reading the data back; audit log credits the signed-in user and the hash chain stays valid. Clicked by hand in the browser: Batch Actions (two batches) and Notification Preferences (toggle persists across reload)
 
 **Step 10: Role check on appeal approval** — DONE. `/api/v1/appeals/{id}/approve` returns 403 unless `X-User-Roles` contains reviewer, manager or admin; `approved_by` is always the authenticated caller (request-body value ignored). Proxy routes now forward the real NextAuth session identity (`apps/web/app/lib/identity.ts`) instead of the hardcoded dev-user-001/biller. "Dev Login as Reviewer" (dev-user-003, role reviewer) added to `/login`
 
@@ -111,6 +110,15 @@ cd apps/web && npm run dev  # port 3000
 ```
 
 ## History log
+
+### 2026-11-01 — Step 9: every write path fixed end to end + sign-in required for writes
+- **Method:** extracted all 53 non-GET `fetch` calls from `apps/web/app/dashboard/**` and `components/`, replayed each page's exact body through `localhost:3000` with a NextAuth session cookie, then read the data back (Java silently drops unknown JSON fields, so 200 alone proves nothing)
+- **Fixed (core-api `ClaimController`):** `/claims/batch-transition` reads `new_status` (pages; `status` still accepted) and returns `{results, transitioned, failed, errors}` (the batch pages read different keys); `/claims/merge` ported to Python's contract — `primary_claim_id` + `secondary_claim_ids[]` (old `primary_id`/`secondary_id` accepted), appends secondaries' denial text/clinical notes, marks them `cancelled`, writes notes on both sides, returns `{primary_id, merged_count, merged_ids}`
+- **Fixed (routing rules):** workflow-service `RoutingRule` gains optional `match_payer`, `match_denial_code`, `min_amount_cents`, `max_amount_cents` (what `/dashboard/routing` sends and displays) and `assign_to_name`; generic `match_field/operator/value` now optional. core-api auto-route ANDs every condition a rule sets. NOTE: on an existing H2 file, `ddl-auto=update` does not drop the old NOT NULL on `match_field` — delete `data/` for a fresh schema
+- **Fixed (notification prefs):** workflow-service `GET/PUT /notifications/preferences` now use Python's flat `{notif_*: "true"|"false"}` map with defaults (stored in the existing `notification_preferences` table); both notification pages were broken before
+- **Fixed (frontend):** every DELETE proxy route used `resp.json()` on Java's 204 No Content → 502 in the UI even when the delete worked. New `apps/web/app/lib/proxy.ts` `relayJson()` used by all 6 DELETE routes. `dashboard/batch-actions` reset its status filter when the filtered status no longer exists (table showed empty after a batch)
+- **Security:** `apps/web/middleware.ts` returns 401 for POST/PUT/PATCH/DELETE on `/api/v1/*` and `/api/backend/*` without a NextAuth session (before: anyone could write, recorded as `anonymous`). Reads stay open. Shared secret moved to `app/lib/authSecret.ts`
+- **Verified:** 36/36 replay checks as signed-in reviewer; anonymous writes → 401; anonymous reads 200; 76 GET routes OK; `tsc` + `eslint` clean; audit chain valid (97 entries)
 
 ### 2026-11-01 — CI fixed (was failing on main too, for every commit)
 - **Frontend lint & typecheck:** repo had no ESLint config, so `npx next lint` stopped at an interactive setup prompt and exited 1. `next lint` is also deprecated in Next 15. Added `apps/web/eslint.config.mjs` (flat config: `next/core-web-vitals` + `next/typescript`), devDeps `eslint@9`, `eslint-config-next@15.5.23`, `@eslint/eslintrc@3`; `npm run lint` is now `eslint .`. CI still runs `npx next lint`, which now finds the config and runs non-interactively (exit 0). Switching CI to `npm run lint` needs a push with the GitHub `workflow` scope, which the current sign-in token lacks — left as a follow-up. Fixed the 3 errors it found (unescaped apostrophes in `upload/page.tsx` and `login/page.tsx`; `<a>` → `<Link>` in `AppealWorkbench.tsx`). 19 warnings remain (mostly unused vars) — they don't fail CI

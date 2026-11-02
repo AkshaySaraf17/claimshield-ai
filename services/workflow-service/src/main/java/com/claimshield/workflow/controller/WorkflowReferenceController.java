@@ -16,6 +16,15 @@ public class WorkflowReferenceController {
             Map.of("id", "dev-user-004", "name", "Lisa Park", "role", "manager")
     );
 
+    public static String teamMemberName(String userId) {
+        if (userId == null) return null;
+        return TEAM_MEMBERS.stream()
+                .filter(m -> userId.equals(m.get("id")))
+                .map(m -> m.get("name"))
+                .findFirst()
+                .orElse(userId);
+    }
+
     private static final List<Map<String, Object>> ROLES = List.of(
             Map.of("id", "biller", "name", "Biller", "permissions", List.of("claims.read", "claims.create", "claims.update", "appeals.create")),
             Map.of("id", "reviewer", "name", "Reviewer", "permissions", List.of("claims.read", "claims.update", "appeals.create", "appeals.approve")),
