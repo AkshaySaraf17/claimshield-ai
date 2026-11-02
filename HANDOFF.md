@@ -1,8 +1,8 @@
 # Handoff
-Last updated: 2026-11-01 | Branch: main | Last commit: 783f2f2 (pending new commit)
+Last updated: 2026-11-01 | Branch: main | Last commit: e2b0732 (pending new commit)
 
 ## Project summary
-ClaimShield AI is a healthcare claims denial management platform with 92 dashboard pages (Next.js 15, port 3000), a Java Spring Boot core-api (port 8080) with 15 entities and 13 controllers, a Python FastAPI monolith being replaced (port 8003), and a Python AI/ML agent service (port 8001, not migrating). Monorepo: `apps/web/` (frontend), `services/core-api/` (Java), `services/dev_server/` (Python, being replaced), `services/agent_service/` (Python AI, stays).
+ClaimShield AI is a healthcare claims denial management platform with 92 dashboard pages (Next.js 15, port 3000), a Java Spring Boot core-api (port 8080) with 15 entities, 14 controllers, and ~50 endpoints, a Python FastAPI monolith being replaced (port 8003), and a Python AI/ML agent service (port 8001, not migrating). Monorepo: `apps/web/` (frontend), `services/core-api/` (Java), `services/dev_server/` (Python, being replaced), `services/agent_service/` (Python AI, stays).
 
 ## Current state
 
@@ -27,13 +27,16 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
     - `TenantController` — list/get/create
     - `ClinicController` — list/get/create
     - `ReferenceController` — denial-codes (searchable), denial-code-reference, denial-prevention-tips, appeal-templates, rules/config, system/health
-  - **3 services**: AuditService (hash-chained SHA-256), DocumentService (PDFBox/POI), ReferenceDataService (NEW — all reference data + appeal letter generator ported from Python)
+  - **4 services**: AuditService (hash-chained SHA-256), DocumentService (PDFBox/POI), ReferenceDataService (all reference data + appeal letter generator), Edi835ParserService (X12 835 parser ported from Python)
+  - **Edi835Controller** — POST `/api/v1/edi835/parse` (structured JSON with payer, claims, service lines, adjustments, remark codes) and POST `/api/v1/edi835/import` (creates Claim entities from parsed EDI data with filing deadline computation)
+  - **ClaimController expanded** with: export (JSON + CSV), bulk-import, compare, merge, snapshot (claim + notes + history + appeals + audit)
   - **DataSeeder** expanded: seeds 10 claims + tenant, 2 clinics, 10 notes, comments, tags, assignments, costs, status history entries
-  - **All endpoints tested with curl** — status transitions, workqueue, timeline, letter generation, reference data all verified working
-  - ~40 new endpoints in this session
+  - **All endpoints tested with curl** — status transitions, workqueue, timeline, letter generation, reference data, EDI 835 parse/import, export/CSV, bulk-import, compare, merge, snapshot all verified working
+  - ~50 endpoints total in core-api
 
 ### In progress
-- **Phase 1 nearly complete** — remaining: EDI 835 Java parser (Step 6), some secondary claim operations (export/CSV, bulk import, compare, merge, snapshot)
+- **Phase 1 COMPLETE** — all entities, controllers, services, EDI parser, and claim operations ported to Java
+- **Phase 2 next** — create workflow-service (port 8082)
 - No files are half-written; everything compiles and runs
 
 ### Broken or blocked
@@ -53,19 +56,8 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 
 ## Next steps (detailed plan)
 
-**Step 1: Port EDI 835 parser to Java**
-- Create `services/core-api/src/main/java/com/claimshield/core/service/Edi835ParserService.java`
-- Create `Edi835Controller.java` with POST `/api/v1/edi835/parse` and POST `/api/v1/edi835/import`
-- Reference: Python parser at `services/dev_server/edi835.py`
-- Done when: parsing a sample EDI 835 file returns structured JSON matching Python output
-
-**Step 2: Add remaining claim operations**
-- Export/CSV: GET `/api/v1/claims/export` and `/api/v1/claims/export/csv`
-- Bulk import: POST `/api/v1/claims/bulk-import`
-- Compare: POST `/api/v1/claims/compare`
-- Merge: POST `/api/v1/claims/merge`
-- Snapshot: GET `/api/v1/claims/{id}/snapshot`
-- Done when: curl tests pass
+**Step 1: Port EDI 835 parser to Java** — DONE
+**Step 2: Add remaining claim operations** — DONE
 
 **Step 3: Create workflow-service (port 8082) — Phase 2**
 - New Spring Boot project at `services/workflow-service/`
@@ -116,6 +108,13 @@ cd services/dev_server && python main.py  # port 8003
 ```
 
 ## History log
+
+### 2026-11-01 — Phase 1 complete: EDI 835 parser + remaining claim ops
+- Ported Python EDI 835 X12 parser to Java (`Edi835ParserService.java`) — handles ISA/GS/ST/BPR/TRN/N1/CLP/NM1/SVC/CAS/DTM/LQ segments, service adjustments, remark codes, all amounts in cents
+- Created `Edi835Controller.java` with POST `/api/v1/edi835/parse` and `/import`
+- Added claim operations: export (JSON + CSV), bulk-import, compare, merge, snapshot
+- Fixed Claim entity to auto-generate UUID in `@PrePersist`
+- All new endpoints verified with curl
 
 ### 2026-11-01 — Initial handoff + Phase 1 core-api expansion
 - Created CLAUDE.md and HANDOFF.md with handoff protocol

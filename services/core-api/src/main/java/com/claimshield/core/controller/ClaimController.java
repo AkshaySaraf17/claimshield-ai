@@ -444,6 +444,179 @@ public class ClaimController {
         return Map.of("results", results, "total", results.size());
     }
 
+    @GetMapping("/export")
+    public Map<String, Object> exportClaims(@RequestParam(required = false) String status,
+                                             @RequestParam(required = false) String payer,
+                                             HttpServletRequest request) {
+        String tenantId = getTenantId(request);
+        List<Claim> claims = claimRepository.findByTenantIdOrderByCreatedAtDesc(tenantId);
+        if (status != null) claims = claims.stream().filter(c -> status.equals(c.getStatus())).toList();
+        if (payer != null) claims = claims.stream().filter(c -> payer.equals(c.getPayer())).toList();
+
+        List<Map<String, Object>> rows = claims.stream().map(this::claimToMap).toList();
+        return Map.of("export_format", "json", "count", rows.size(), "claims", rows);
+    }
+
+    @GetMapping("/export/csv")
+    public ResponseEntity<String> exportClaimsCsv(@RequestParam(required = false) String status,
+                                                   HttpServletRequest request) {
+        String tenantId = getTenantId(request);
+        List<Claim> claims = claimRepository.findByTenantIdOrderByCreatedAtDesc(tenantId);
+        if (status != null) claims = claims.stream().filter(c -> status.equals(c.getStatus())).toList();
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("id,claim_number,patient_name,patient_id,payer,denial_code,denial_reason,amount_denied_cents,status,filing_deadline,created_at\n");
+        for (Claim c : claims) {
+            sb.append(csvEscape(c.getId())).append(",");
+            sb.append(csvEscape(c.getClaimNumber())).append(",");
+            sb.append(csvEscape(c.getPatientName())).append(",");
+            sb.append(csvEscape(c.getPatientId())).append(",");
+            sb.append(csvEscape(c.getPayer())).append(",");
+            sb.append(csvEscape(c.getDenialCode())).append(",");
+            sb.append(csvEscape(c.getDenialReason())).append(",");
+            sb.append(c.getAmountDeniedCents() != null ? c.getAmountDeniedCents() : "").append(",");
+            sb.append(csvEscape(c.getStatus())).append(",");
+            sb.append(c.getFilingDeadline() != null ? c.getFilingDeadline().toString() : "").append(",");
+            sb.append(c.getCreatedAt() != null ? c.getCreatedAt().toString() : "").append("\n");
+        }
+
+        return ResponseEntity.ok()
+                .header("Content-Type", "text/csv")
+                .header("Content-Disposition", "attachment; filename=claims_export.csv")
+                .body(sb.toString());
+    }
+
+    @PostMapping("/bulk-import")
+    @ResponseStatus(HttpStatus.CREATED)
+    public Map<String, Object> bulkImport(@RequestBody Map<String, Object> body,
+                                           HttpServletRequest request) {
+        String tenantId = getTenantId(request);
+        String userId = getUserId(request);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> items = (List<Map<String, Object>>) body.get("claims");
+        if (items == null) return Map.of("imported", 0, "errors", List.of("missing 'claims' array"));
+
+        List<Map<String, Object>> imported = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+        for (int i = 0; i < items.size(); i++) {
+            Map<String, Object> item = items.get(i);
+            try {
+                Claim claim = new Claim();
+                claim.setTenantId(tenantId);
+                claim.setPayer((String) item.getOrDefault("payer", "Unknown"));
+                claim.setPatientName((String) item.get("patient_name"));
+                claim.setPatientId((String) item.get("patient_id"));
+                claim.setDenialCode((String) item.get("denial_code"));
+                claim.setDenialReason((String) item.get("denial_reason"));
+                if (item.containsKey("amount_denied_cents"))
+                    claim.setAmountDeniedCents(((Number) item.get("amount_denied_cents")).longValue());
+                claim.setStatus((String) item.getOrDefault("status", "pending_review"));
+                claim.setFilingDeadline(referenceDataService.computeDeadline(claim.getPayer()));
+                claim.setCreatedBy(userId);
+                Claim saved = claimRepository.save(claim);
+                imported.add(Map.of("id", saved.getId(), "patient_name", saved.getPatientName() != null ? saved.getPatientName() : ""));
+            } catch (Exception e) {
+                errors.add("row " + i + ": " + e.getMessage());
+            }
+        }
+
+        auditService.writeAudit(tenantId, userId, "claims.bulk_imported", "batch", tenantId,
+                "{\"count\":" + imported.size() + "}");
+        return Map.of("imported", imported.size(), "errors", errors, "claims", imported);
+    }
+
+    @PostMapping("/compare")
+    public Map<String, Object> compareClaims(@RequestBody Map<String, Object> body,
+                                              HttpServletRequest request) {
+        String tenantId = getTenantId(request);
+        @SuppressWarnings("unchecked")
+        List<String> ids = (List<String>) body.get("claim_ids");
+        if (ids == null || ids.size() < 2) return Map.of("error", "provide at least 2 claim_ids");
+
+        List<Map<String, Object>> claimData = new ArrayList<>();
+        for (String id : ids) {
+            claimRepository.findById(id)
+                    .filter(c -> c.getTenantId().equals(tenantId))
+                    .ifPresent(c -> claimData.add(claimToMap(c)));
+        }
+
+        Map<String, Object> differences = new LinkedHashMap<>();
+        if (claimData.size() >= 2) {
+            Map<String, Object> first = claimData.get(0);
+            for (String key : first.keySet()) {
+                if ("id".equals(key) || "createdAt".equals(key) || "updatedAt".equals(key)) continue;
+                Set<Object> values = claimData.stream()
+                        .map(c -> c.get(key))
+                        .collect(Collectors.toSet());
+                if (values.size() > 1) differences.put(key, values);
+            }
+        }
+
+        return Map.of("claims", claimData, "differences", differences, "identical_fields_count",
+                claimData.isEmpty() ? 0 : claimData.get(0).size() - differences.size() - 3);
+    }
+
+    @PostMapping("/merge")
+    public ResponseEntity<?> mergeClaims(@RequestBody Map<String, Object> body,
+                                          HttpServletRequest request) {
+        String tenantId = getTenantId(request);
+        String userId = getUserId(request);
+        String primaryId = (String) body.get("primary_id");
+        String secondaryId = (String) body.get("secondary_id");
+
+        Optional<Claim> primaryOpt = claimRepository.findById(primaryId).filter(c -> c.getTenantId().equals(tenantId));
+        Optional<Claim> secondaryOpt = claimRepository.findById(secondaryId).filter(c -> c.getTenantId().equals(tenantId));
+
+        if (primaryOpt.isEmpty() || secondaryOpt.isEmpty())
+            return ResponseEntity.notFound().build();
+
+        Claim primary = primaryOpt.get();
+        Claim secondary = secondaryOpt.get();
+
+        if (primary.getAmountDeniedCents() == null && secondary.getAmountDeniedCents() != null)
+            primary.setAmountDeniedCents(secondary.getAmountDeniedCents());
+        if (primary.getDenialCode() == null && secondary.getDenialCode() != null)
+            primary.setDenialCode(secondary.getDenialCode());
+        if (primary.getDenialReason() == null && secondary.getDenialReason() != null)
+            primary.setDenialReason(secondary.getDenialReason());
+        if (primary.getPatientId() == null && secondary.getPatientId() != null)
+            primary.setPatientId(secondary.getPatientId());
+
+        claimRepository.save(primary);
+        secondary.setStatus("merged");
+        claimRepository.save(secondary);
+
+        auditService.writeAudit(tenantId, userId, "claim.merged", "claim", primaryId,
+                "{\"merged_from\":\"" + secondaryId + "\"}");
+
+        return ResponseEntity.ok(Map.of("primary", claimToMap(primary), "secondary_status", "merged"));
+    }
+
+    @GetMapping("/{id}/snapshot")
+    public ResponseEntity<?> claimSnapshot(@PathVariable String id, HttpServletRequest request) {
+        String tenantId = getTenantId(request);
+        return claimRepository.findById(id)
+                .filter(c -> c.getTenantId().equals(tenantId))
+                .map(c -> {
+                    Map<String, Object> snapshot = new LinkedHashMap<>();
+                    snapshot.put("claim", claimToMap(c));
+                    snapshot.put("notes", noteRepository.findByTenantIdAndClaimIdOrderByCreatedAtDesc(tenantId, id));
+                    snapshot.put("status_history", statusHistoryRepository.findByTenantIdAndClaimIdOrderByChangedAtDesc(tenantId, id));
+                    snapshot.put("appeals", appealRepository.findByClaimIdOrderByCreatedAtDesc(id));
+                    snapshot.put("audit_trail", auditLogRepository.findByTenantIdAndResourceIdOrderByCreatedAtAsc(tenantId, id));
+                    snapshot.put("snapshot_at", LocalDateTime.now().toString());
+                    return ResponseEntity.ok((Object) snapshot);
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    private String csvEscape(String val) {
+        if (val == null) return "";
+        if (val.contains(",") || val.contains("\"") || val.contains("\n"))
+            return "\"" + val.replace("\"", "\"\"") + "\"";
+        return val;
+    }
+
     private boolean matchesSearch(Claim c, String q) {
         return (c.getPayer() != null && c.getPayer().toLowerCase().contains(q))
                 || (c.getDenialCode() != null && c.getDenialCode().toLowerCase().contains(q))
