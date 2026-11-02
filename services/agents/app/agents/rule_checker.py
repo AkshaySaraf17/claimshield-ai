@@ -1,7 +1,8 @@
 """Agent 1.5: Rule Checker — runs deterministic rules before the LLM researcher.
 
-Calls the rules-engine service. If there are blockers, the pipeline flags
-needs_human_review and continues (the appeal will require manual intervention)."""
+Calls the deterministic rules engine (served by the Java core-api). If there are
+blockers, the pipeline flags needs_human_review and continues (the appeal will
+require manual intervention)."""
 
 from __future__ import annotations
 import httpx

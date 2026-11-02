@@ -39,17 +39,10 @@ services:
       - "8001:8001"
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
-      - RULES_ENGINE_URL=http://rules-engine:8002
+      - RULES_ENGINE_URL=http://core-api:8080
     depends_on:
       - ollama
-      - rules-engine
-
-  rules-engine:
-    build:
-      context: .
-      dockerfile: services/rules_engine/Dockerfile
-    ports:
-      - "8002:8002"
+      - core-api
 
   ollama:
     image: ollama/ollama:latest
@@ -68,8 +61,7 @@ services:
       - JAVA_API_URL=http://core-api:8080
       - ANALYTICS_SERVICE_URL=http://analytics-service:8081
       - WORKFLOW_SERVICE_URL=http://workflow-service:8082
-      - AGENT_PIPELINE_URL=http://agents:8001
-      - RULES_ENGINE_URL=http://rules-engine:8002
+      - AGENT_SERVICE_URL=http://agents:8001
     depends_on:
       - core-api
       - analytics-service

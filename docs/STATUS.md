@@ -28,7 +28,7 @@ Last updated: 2026-10-30
 | Claims service (CRUD + status machine) | `test_claims_schemas.py` — 6 tests |
 | Appeals service (draft, approve, send) | `test_appeals_schemas.py` — 2 tests |
 | Server-enforced approval | /approve checks role; /send blocks if needs_review=True |
-| Rules engine (timely filing, denial codes, CCI bundling) | `test_rules_engine.py` — 10 tests; every rule has `source` |
+| Rules engine (timely filing, denial codes, CCI bundling) | Ported to Java core-api (2026-11-01): `RulesEngineServiceTest` (10, one-to-one port) + `RulesEngineApiTest` (3); every rule has `source` |
 | Agent pipeline (parser → rule_checker → researcher → writer) | `test_agent_parser.py` — 3 tests |
 | Parser uses null (not hallucinations) | System prompt: "set to null if cannot determine" |
 | Provider-agnostic LLM client | ollama, anthropic, openai, gemini via httpx |
@@ -100,10 +100,9 @@ Last updated: 2026-10-30
 | test_audit_hasher.py | 4 | Audit chain |
 | test_claims_schemas.py | 6 | Claims state machine |
 | test_appeals_schemas.py | 2 | Appeals schemas |
-| test_rules_engine.py | 10 | Rules engine |
 | test_agent_parser.py | 3 | Agent parser |
 | test_supervisor_graph.py | 21 | Supervisor routing |
 | test_edi835.py | 28 | EDI 835 parsing |
 | test_observability.py | 7 | Structured logging |
 | test_security.py | 6 | Rate limiting |
-| **Total** | **103** | |
+| **Total** | **93** | (rules engine tests moved to Java) |

@@ -29,20 +29,18 @@ cd apps/web && npm install && cd ../..
 Run each in its own terminal, or background them with `&`.
 
 ```bash
-# 1. rules engine (port 8002)
-PYTHONPATH="$PWD" uvicorn services.rules_engine.app.main:app --port 8002
-
-# 2. agent pipeline (port 8001)
-PYTHONPATH="$PWD" RULES_ENGINE_URL=http://localhost:8002 OLLAMA_MODEL=llama3.2:3b uvicorn services.agents.app.main:app --port 8001
-
-# 3. Java services — run all three from the SAME directory so they share ./data/claimshield (H2)
-#    Start core-api first; it seeds the demo data. Requires Java 17 + Maven.
+# 1. Java services — run all three from the SAME directory so they share ./data/claimshield (H2)
+#    Start core-api first; it seeds the demo data and also serves the deterministic
+#    rules engine (/api/v1/rules/check) the agent pipeline calls. Requires Java 17 + Maven.
 (cd services/core-api && mvn -q package -DskipTests)
 (cd services/analytics-service && mvn -q package -DskipTests)
 (cd services/workflow-service && mvn -q package -DskipTests)
 java -jar services/core-api/target/core-api-1.0.0.jar &              # port 8080
 java -jar services/analytics-service/target/analytics-service-0.1.0.jar &  # port 8081
 java -jar services/workflow-service/target/workflow-service-1.0.0.jar &    # port 8082
+
+# 2. agent pipeline (port 8001) — RULES_ENGINE_URL defaults to core-api at http://localhost:8080
+PYTHONPATH="$PWD" OLLAMA_MODEL=llama3.2:3b uvicorn services.agents.app.main:app --port 8001
 
 # 4. frontend (port 3000)
 cd apps/web && npm run dev
@@ -63,8 +61,7 @@ Open [localhost:3000/dashboard](http://localhost:3000/dashboard).
 apps/web/                 Next.js 15 dashboard
 services/
   agents/                 LangGraph agent pipeline (parser → specialist → writer)
-  rules_engine/           Deterministic billing rules (timely filing, CCI, payer rules)
-  core-api/               Java: claims, appeals, audit, documents, EDI 835 (port 8080)
+  core-api/               Java: claims, appeals, audit, documents, EDI 835, rules engine (port 8080)
   analytics-service/      Java: read-only analytics and reports (port 8081)
   workflow-service/       Java: routing rules, preferences, escalations (port 8082)
   claims/                 Claims service (Postgres, for production)

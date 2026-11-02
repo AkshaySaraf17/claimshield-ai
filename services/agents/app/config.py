@@ -18,7 +18,8 @@ class AgentSettings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
 
-    rules_engine_url: str = "http://localhost:8000"
+    # Deterministic rules engine (served by the Java core-api)
+    rules_engine_url: str = "http://localhost:8080"
 
     model_config = {"env_prefix": "", "env_file": ".env", "extra": "ignore"}
 
