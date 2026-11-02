@@ -1,5 +1,5 @@
 # Handoff
-Last updated: 2026-11-01 | Branch: phase5/java-api-parity | Last commit: Step 9 write-path fixes + sign-in required for writes (this branch)
+Last updated: 2026-11-01 | Branch: phase5/java-api-parity | Last commit: home-page navigation crash fix (this branch)
 
 ## Project summary
 ClaimShield AI is a healthcare claims denial management platform with 92 dashboard pages (Next.js 15, port 3000), a Java Spring Boot core-api (port 8080) with 15 entities, 17 controllers, and ~75 endpoints, Java analytics-service (8081) and workflow-service (8082), and a Python AI/ML agent service (port 8001, not migrating). The Python FastAPI dev_server (port 8003) was removed in Phase 5. Monorepo: `apps/web/` (frontend), `services/core-api/`, `services/analytics-service/`, `services/workflow-service/` (Java), `services/agent_service/` (Python AI, stays).
@@ -110,6 +110,13 @@ cd apps/web && npm run dev  # port 3000
 ```
 
 ## History log
+
+### 2026-11-01 — Fix crash when leaving the home page (NotFoundError: removeChild)
+- **Symptom:** clicking "Open the workbench" (any client-side navigation away from `/`) threw `Runtime NotFoundError` from `removeChild` in `section` ("The object can not be found here." in Safari)
+- **Cause:** `ScrollShowcase` pins its root `<section>` with GSAP ScrollTrigger (`pin: true`); GSAP moves the section into a `.pin-spacer` div React doesn't know about. The home page returns a fragment, so on navigation React calls `removeChild(section)` on the original parent, where the section no longer is. GSAP's cleanup (`mm.revert()` in `useEffect`) runs only after React's DOM removal
+- **Fix:** `apps/web/app/components/ScrollShowcase.tsx` wraps the pinned section in a React-owned `<div>`, so React removes the wrapper instead
+- **Verified:** reproduced first (Chrome: "Failed to execute 'removeChild'… not a child of this node"); after the fix, navigating to `/dashboard` from the top and from 1500px down (while pinned) shows no error, and the pin animation still works
+- **Not fixed (dev-only console warnings, no crash):** missing list `key` props in `dashboard/code-lookup`, `letter-history`, `roles`; a `NaN` rendered as text somewhere in the sweep
 
 ### 2026-11-01 — Step 9: every write path fixed end to end + sign-in required for writes
 - **Method:** extracted all 53 non-GET `fetch` calls from `apps/web/app/dashboard/**` and `components/`, replayed each page's exact body through `localhost:3000` with a NextAuth session cookie, then read the data back (Java silently drops unknown JSON fields, so 200 alone proves nothing)

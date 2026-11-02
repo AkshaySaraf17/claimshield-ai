@@ -275,76 +275,80 @@ export default function ScrollShowcase() {
   }, []);
 
   return (
-    <section
-      ref={sectionRef}
-      className="relative min-h-screen overflow-hidden bg-ink-950"
-    >
-      {/* Ambient gradient orbs */}
-      <div
-        ref={orb1Ref}
-        className="pointer-events-none absolute left-[15%] top-[20%] h-[500px] w-[500px] rounded-full opacity-20"
-        style={{
-          background: "radial-gradient(circle, #1f7a5c 0%, transparent 70%)",
-          willChange: "transform, opacity",
-        }}
-      />
-      <div
-        ref={orb2Ref}
-        className="pointer-events-none absolute bottom-[20%] right-[15%] h-[400px] w-[400px] rounded-full opacity-15"
-        style={{
-          background: "radial-gradient(circle, #5b6b7a 0%, transparent 70%)",
-          willChange: "transform, opacity",
-        }}
-      />
+    // GSAP pinning moves the <section> into a .pin-spacer element React doesn't know about.
+    // Keep a React-owned wrapper so unmounting removes this div, not the relocated section.
+    <div>
+      <section
+        ref={sectionRef}
+        className="relative min-h-screen overflow-hidden bg-ink-950"
+      >
+        {/* Ambient gradient orbs */}
+        <div
+          ref={orb1Ref}
+          className="pointer-events-none absolute left-[15%] top-[20%] h-[500px] w-[500px] rounded-full opacity-20"
+          style={{
+            background: "radial-gradient(circle, #1f7a5c 0%, transparent 70%)",
+            willChange: "transform, opacity",
+          }}
+        />
+        <div
+          ref={orb2Ref}
+          className="pointer-events-none absolute bottom-[20%] right-[15%] h-[400px] w-[400px] rounded-full opacity-15"
+          style={{
+            background: "radial-gradient(circle, #5b6b7a 0%, transparent 70%)",
+            willChange: "transform, opacity",
+          }}
+        />
 
-      {/* Content */}
-      <div className="relative mx-auto flex h-screen max-w-7xl items-center justify-center px-6">
-        {/* 3D card with perspective */}
-        <div className="perspective-1200 w-full max-w-2xl">
-          <div
-            ref={cardRef}
-            className="preserve-3d relative aspect-[640/420] w-full"
-            style={{ willChange: "transform, opacity" }}
-          >
-            <div className="backface-hide absolute inset-0 rounded-xl shadow-2xl shadow-black/40">
-              <ProductCardFront />
+        {/* Content */}
+        <div className="relative mx-auto flex h-screen max-w-7xl items-center justify-center px-6">
+          {/* 3D card with perspective */}
+          <div className="perspective-1200 w-full max-w-2xl">
+            <div
+              ref={cardRef}
+              className="preserve-3d relative aspect-[640/420] w-full"
+              style={{ willChange: "transform, opacity" }}
+            >
+              <div className="backface-hide absolute inset-0 rounded-xl shadow-2xl shadow-black/40">
+                <ProductCardFront />
+              </div>
+              <div className="backface-hide rotate-y-180 absolute inset-0 rounded-xl shadow-2xl shadow-black/40">
+                <ShieldFace />
+              </div>
             </div>
-            <div className="backface-hide rotate-y-180 absolute inset-0 rounded-xl shadow-2xl shadow-black/40">
-              <ShieldFace />
+          </div>
+
+          {/* Text reveal (right side) */}
+          <div className="absolute right-6 top-1/2 hidden max-w-xs -translate-y-1/2 md:right-12 md:block lg:right-20 lg:max-w-sm">
+            <h2
+              ref={headingRef}
+              className="font-display text-3xl font-semibold leading-tight text-white lg:text-4xl"
+              style={{ opacity: 0 }}
+            >
+              From denial to appeal
+              <br />
+              in minutes.
+            </h2>
+            <div ref={statsRef} className="mt-8 space-y-5">
+              <StatItem icon="speed" value="3× faster" desc="Appeal turnaround vs manual drafting" />
+              <StatItem icon="check" value="100% reviewed" desc="Every letter approved by staff" />
+              <StatItem icon="cost" value="Zero-cost start" desc="Built for independent practices" />
+            </div>
+          </div>
+
+          {/* Mobile-only text (no scroll animation, shown statically) */}
+          <div className="mt-10 md:hidden">
+            <h2 className="font-display text-2xl font-semibold leading-tight text-white">
+              From denial to appeal in minutes.
+            </h2>
+            <div className="mt-6 space-y-4">
+              <StatItem icon="speed" value="3× faster" desc="Appeal turnaround vs manual drafting" />
+              <StatItem icon="check" value="100% reviewed" desc="Every letter approved by staff" />
+              <StatItem icon="cost" value="Zero-cost start" desc="Built for independent practices" />
             </div>
           </div>
         </div>
-
-        {/* Text reveal (right side) */}
-        <div className="absolute right-6 top-1/2 hidden max-w-xs -translate-y-1/2 md:right-12 md:block lg:right-20 lg:max-w-sm">
-          <h2
-            ref={headingRef}
-            className="font-display text-3xl font-semibold leading-tight text-white lg:text-4xl"
-            style={{ opacity: 0 }}
-          >
-            From denial to appeal
-            <br />
-            in minutes.
-          </h2>
-          <div ref={statsRef} className="mt-8 space-y-5">
-            <StatItem icon="speed" value="3× faster" desc="Appeal turnaround vs manual drafting" />
-            <StatItem icon="check" value="100% reviewed" desc="Every letter approved by staff" />
-            <StatItem icon="cost" value="Zero-cost start" desc="Built for independent practices" />
-          </div>
-        </div>
-
-        {/* Mobile-only text (no scroll animation, shown statically) */}
-        <div className="mt-10 md:hidden">
-          <h2 className="font-display text-2xl font-semibold leading-tight text-white">
-            From denial to appeal in minutes.
-          </h2>
-          <div className="mt-6 space-y-4">
-            <StatItem icon="speed" value="3× faster" desc="Appeal turnaround vs manual drafting" />
-            <StatItem icon="check" value="100% reviewed" desc="Every letter approved by staff" />
-            <StatItem icon="cost" value="Zero-cost start" desc="Built for independent practices" />
-          </div>
-        </div>
-      </div>
-    </section>
+      </section>
+    </div>
   );
 }
