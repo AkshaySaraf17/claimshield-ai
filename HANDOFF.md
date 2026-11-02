@@ -1,5 +1,5 @@
 # Handoff
-Last updated: 2026-11-01 | Branch: phase5/java-api-parity | Last commit: Steps 8 + 10, page-render fixes (this branch)
+Last updated: 2026-11-01 | Branch: phase5/java-api-parity | Last commit: CI fixes (this branch)
 
 ## Project summary
 ClaimShield AI is a healthcare claims denial management platform with 92 dashboard pages (Next.js 15, port 3000), a Java Spring Boot core-api (port 8080) with 15 entities, 17 controllers, and ~75 endpoints, Java analytics-service (8081) and workflow-service (8082), and a Python AI/ML agent service (port 8001, not migrating). The Python FastAPI dev_server (port 8003) was removed in Phase 5. Monorepo: `apps/web/` (frontend), `services/core-api/`, `services/analytics-service/`, `services/workflow-service/` (Java), `services/agent_service/` (Python AI, stays).
@@ -111,6 +111,11 @@ cd apps/web && npm run dev  # port 3000
 ```
 
 ## History log
+
+### 2026-11-01 — CI fixed (was failing on main too, for every commit)
+- **Frontend lint & typecheck:** repo had no ESLint config, so `npx next lint` stopped at an interactive setup prompt and exited 1. `next lint` is also deprecated in Next 15. Added `apps/web/eslint.config.mjs` (flat config: `next/core-web-vitals` + `next/typescript`), devDeps `eslint@9`, `eslint-config-next@15.5.23`, `@eslint/eslintrc@3`; `npm run lint` is now `eslint .`. CI still runs `npx next lint`, which now finds the config and runs non-interactively (exit 0). Switching CI to `npm run lint` needs a push with the GitHub `workflow` scope, which the current sign-in token lacks — left as a follow-up. Fixed the 3 errors it found (unescaped apostrophes in `upload/page.tsx` and `login/page.tsx`; `<a>` → `<Link>` in `AppealWorkbench.tsx`). 19 warnings remain (mostly unused vars) — they don't fail CI
+- **Python lint & typecheck:** 24 ruff errors in `packages/py-common` + `services/audit` (import order, unused imports, `datetime.UTC`, quoted annotations) fixed with `ruff check --fix` (models.py has `from __future__ import annotations`, so unquoting is safe) + `ruff format` on 9 files. No behaviour change
+- **Python tests:** all 7 test modules failed at import (`No module named 'services'`) because CI ran pytest without the repo root on the path. Added root `pytest.ini` (`pythonpath = .`, `testpaths = tests`). 103 tests pass in a clean Python 3.12 venv with only CI's test-job installs
 
 ### 2026-11-01 — Full dashboard render sweep + response-shape fixes + Docker verified
 - **Why:** the 76-route GET sweep only checked status codes and key style, so it missed missing fields. Loading every dashboard page in a browser found 8 crashing pages

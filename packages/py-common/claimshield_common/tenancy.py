@@ -2,6 +2,7 @@
 requests, events and database sessions."""
 
 from __future__ import annotations
+
 from contextvars import ContextVar
 from uuid import UUID
 
@@ -31,7 +32,7 @@ def bind_tenant_to_session(session: AsyncSession) -> None:
     that RLS policies read."""
 
     @event.listens_for(session.sync_session, "after_begin")
-    def _set_tenant(session, transaction, connection):  # noqa: ARG001
+    def _set_tenant(session, transaction, connection):
         tid = _current_tenant.get()
         if tid is not None:
             connection.execute(

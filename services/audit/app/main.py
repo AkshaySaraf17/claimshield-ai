@@ -1,17 +1,19 @@
 """Audit service — Kafka consumer + health endpoint."""
 
 from __future__ import annotations
+
 import asyncio
 import logging
-
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
 
+from claimshield_common.auth import CurrentUser
 from claimshield_common.db import create_engine, create_session_factory
-from claimshield_common.auth import CurrentUser, Role, require_role
-from claimshield_common.tenancy import get_current_tenant, set_current_tenant, bind_tenant_to_session
 from claimshield_common.models import AuditLog
-
+from claimshield_common.tenancy import (
+    bind_tenant_to_session,
+    set_current_tenant,
+)
+from fastapi import FastAPI
 from sqlalchemy import select
 
 from .consumer import run_consumer
@@ -42,7 +44,10 @@ app = FastAPI(title="ClaimShield Audit Service", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "consumer_running": _consumer_task is not None and not _consumer_task.done()}
+    return {
+        "status": "ok",
+        "consumer_running": _consumer_task is not None and not _consumer_task.done(),
+    }
 
 
 @app.get("/api/v1/audit/entries")

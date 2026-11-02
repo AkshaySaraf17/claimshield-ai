@@ -1,9 +1,10 @@
 """JWT verification and role enforcement for FastAPI services behind Keycloak."""
 
 from __future__ import annotations
+
 from enum import StrEnum
-from uuid import UUID
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
 from pydantic import BaseModel

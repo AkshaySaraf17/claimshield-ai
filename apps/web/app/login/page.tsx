@@ -108,7 +108,7 @@ export default function LoginPage() {
         </div>
 
         <p className="mt-4 text-center text-xs text-ink-500">
-          By signing in, you agree to ClaimShield's Terms of Service
+          By signing in, you agree to ClaimShield&apos;s Terms of Service
         </p>
       </div>
     </div>

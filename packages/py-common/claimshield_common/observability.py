@@ -11,7 +11,7 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -28,7 +28,7 @@ class StructuredJsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         entry: dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -49,7 +49,15 @@ class StructuredJsonFormatter(logging.Formatter):
             entry["span_id"] = span_id
 
         # Add extra fields from the record
-        for key in ("tenant_id", "user_id", "request_id", "method", "path", "status_code", "duration_ms"):
+        for key in (
+            "tenant_id",
+            "user_id",
+            "request_id",
+            "method",
+            "path",
+            "status_code",
+            "duration_ms",
+        ):
             val = getattr(record, key, None)
             if val is not None:
                 entry[key] = val
@@ -90,7 +98,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def setup_structured_logging(service_name: str = "claimshield", level: int = logging.INFO) -> None:
+def setup_structured_logging(
+    service_name: str = "claimshield", level: int = logging.INFO
+) -> None:
     """Replace the root handler with JSON structured output."""
     root = logging.getLogger()
     root.setLevel(level)
@@ -112,11 +122,13 @@ def setup_otel_tracing(service_name: str = "claimshield") -> None:
     """
     try:
         from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+            OTLPSpanExporter,
+        )
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from opentelemetry.sdk.resources import SERVICE_NAME, Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        from opentelemetry.sdk.resources import Resource, SERVICE_NAME
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
         resource = Resource.create({SERVICE_NAME: service_name})
         provider = TracerProvider(resource=resource)

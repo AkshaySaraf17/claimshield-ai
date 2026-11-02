@@ -1,9 +1,9 @@
 """RFC 9457 application/problem+json error responses."""
 
 from __future__ import annotations
+
 from typing import Any
 
-from fastapi import Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 

@@ -1,17 +1,17 @@
 """Kafka consumer that reads audit.events.v1 and writes hash-chained audit rows."""
 
 from __future__ import annotations
-import asyncio
+
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from aiokafka import AIOKafkaConsumer
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from claimshield_common.models import AuditLog
 from claimshield_common.settings import get_settings
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from .hasher import compute_hash
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ async def process_event(session: AsyncSession, raw: bytes) -> None:
     resource_type = event.get("resource_type", "")
     resource_id = event.get("resource_id", "")
     detail = event.get("data") or event.get("detail")
-    timestamp = event.get("time", datetime.now(timezone.utc).isoformat())
+    timestamp = event.get("time", datetime.now(UTC).isoformat())
 
     prev_hash = await _get_last_hash(session, tenant_id)
 
@@ -66,7 +66,13 @@ async def process_event(session: AsyncSession, raw: bytes) -> None:
     )
     session.add(entry)
     await session.commit()
-    logger.info("Audit entry %s action=%s resource=%s/%s", entry_hash[:12], action, resource_type, resource_id)
+    logger.info(
+        "Audit entry %s action=%s resource=%s/%s",
+        entry_hash[:12],
+        action,
+        resource_type,
+        resource_id,
+    )
 
 
 async def run_consumer(session_factory) -> None:
@@ -87,6 +93,8 @@ async def run_consumer(session_factory) -> None:
                     await process_event(session, msg.value)
                 await consumer.commit()
             except Exception:
-                logger.exception("Failed to process audit event at offset %s", msg.offset)
+                logger.exception(
+                    "Failed to process audit event at offset %s", msg.offset
+                )
     finally:
         await consumer.stop()
