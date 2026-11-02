@@ -1,5 +1,5 @@
 # Handoff
-Last updated: 2026-11-01 | Branch: phase7/rules-engine-java | Last commit: rules engine ported to Java
+Last updated: 2026-11-01 | Branch: phase7/retire-python-microservices (stacked on phase7/rules-engine-java, PR #4) | Last commit: Python claims/appeals/audit retired
 
 ## Project summary
 ClaimShield AI is a healthcare claims denial management platform with 92 dashboard pages (Next.js 15, port 3000), a Java Spring Boot core-api (port 8080) with 15 entities, 17 controllers, and ~75 endpoints, Java analytics-service (8081) and workflow-service (8082), and a Python AI/ML agent service (port 8001, not migrating). The Python FastAPI dev_server (port 8003) was removed in Phase 5. Monorepo: `apps/web/` (frontend), `services/core-api/`, `services/analytics-service/`, `services/workflow-service/` (Java), `services/agent_service/` (Python AI, stays).
@@ -90,8 +90,15 @@ ClaimShield AI is a healthcare claims denial management platform with 92 dashboa
 
 **Step 14: Port rules engine into core-api** — DONE (branch `phase7/rules-engine-java`). `RulesEngineService` + `RulesEngineController` at `POST /api/v1/rules/check` (same contract as Python). Agent pipeline's `rules_engine_url` default → `http://localhost:8080`; compose agents → `http://core-api:8080`. `services/rules_engine/` and `tests/test_rules_engine.py` deleted
 
-**Step 15: Retire Python claims/appeals/audit microservices** — NEXT. No runtime callers (frontend and agents use Java core-api). For each: check every Python endpoint/behaviour has a Java equivalent, port its Python tests to Java (notably `test_edi835.py`, 28 tests, against `Edi835ParserService`; `test_audit_hasher.py`; `test_claims_schemas.py` status machine; `test_appeals_schemas.py`), then delete the service + tests and update CI (`pip install -e services/audit`, `ruff check ... services/audit/`), `infra/compose/*.yml`, `apisix` routes, SETUP.md, STATUS.md
-- Done when: no `services/{claims,appeals,audit}` left, ported tests pass in Java, CI green
+**Step 15: Retire Python claims/appeals/audit microservices** — DONE (branch `phase7/retire-python-microservices`). Every Python endpoint mapped to Java core-api; all their Python tests ported to Java; services, tests, CI steps deleted; APISIX gateway routes now point at `core-api:8080`. Two Java bugs and one security hole found and fixed along the way (see history)
+
+**Step 16 (suggested): decide the open questions below**, then the remaining Phase 7 scope is done. Python left: `services/agents` (AI), `services/policy` (RAG/embeddings), `packages/py-common` (used by policy + its own tests), `backend/` (unused old AI pipeline — candidate for deletion, user's call)
+
+**Open questions for the user (Phase 7 part 2):**
+1. ~~**Who may approve appeals?**~~ **DECIDED 2026-11-01 (user): keep strict — billers cannot approve.** Approvers are `reviewer`/`manager`/`admin` (dev) and `physician_reviewer`/`clinic_admin`/`platform_admin` (Keycloak). The retired Python service allowed `biller`; that is intentionally not carried over. Don't add `biller` to `AppealController.APPROVER_ROLES`
+2. **Audit hash doesn't cover the timestamp.** Python hashed `created_at`; Java's `AuditService.computeHash` doesn't, so an edited `created_at` passes `/audit/verify`. Fixing changes the hash formula → existing chains must be re-hashed or versioned
+3. **Event outbox not ported.** Python claims/appeals wrote CloudEvents to an outbox (Debezium → Kafka); only consumer was the Python audit service. Java writes audit entries inline instead. If other systems need claim/appeal events (e.g. Python data pipelines), add a Java outbox/Kafka publisher
+4. **Error format.** Python returned RFC 9457 `application/problem+json`; Java returns `{"detail": ...}` (what the frontend reads). Fine for the dashboard; matters only for external API clients
 
 **Open question for the user — conflicting filing-day tables:** core-api `ReferenceDataService.PAYER_FILING_DAYS` (used for claim `filing_deadline`) says Medicare **120** days, default 90; the rules engine's `TIMELY_FILING_DAYS` says Medicare **365** (matches its cited source, 42 CFR § 424.44: 12 months), default 180. Several other payers differ too. Not changed — pick one table as the source of truth
 
@@ -125,6 +132,17 @@ cd apps/web && npm run dev  # port 3000
 ```
 
 ## History log
+
+### 2026-11-01 — Step 15: Python claims/appeals/audit microservices retired (Java core-api owns them)
+- **Mapping:** claims (CRUD, status machine — identical transitions, 409 on invalid, EDI 835 parse) · appeals (create/list/get/approve/send, versions, needs_review) · audit (entries, verify) → all present in core-api. Not ported by design: CloudEvents outbox, problem+json (open questions 3–4)
+- **Security hole fixed:** Java `POST /api/v1/appeals` deserialized the whole `Appeal` from the request, so a client could send `"status":"approved"` and then `/send` with no human approval. Now always creates a `draft` (approval/sent fields cleared), 404 for unknown/foreign claim, `version` = per-claim max + 1 (was always 1). Test written first and failed before the fix
+- **Approver roles:** Keycloak role names (`physician_reviewer`, `clinic_admin`, `platform_admin`) added — APISIX forwards Keycloak roles, so in production nobody could approve before
+- **EDI bug fixed (live user impact):** Java `/edi835/parse` and `/import` read `content`, but the dashboard Import page sends `raw_edi` → page got `{"error":"content is required"}`. Import also created claims with status `denied`/`paid`, which aren't in the workflow (stuck forever). Now Python's contract: `raw_edi` (+ `content`), parse returns `claims_found`, import creates `pending_review` claims with `claim_number`, readable `denial_reason` (`CO-50: $100.00; …`), `raw_denial_text`, returns `{imported, claim_ids, payer_name}`. Earlier replay missed this because it only checked HTTP status — now asserts content
+- **Money:** EDI `dollarsToCents` now exact `BigDecimal` with HALF_EVEN (was `double * 100` + `Math.round`)
+- **Tests ported to Java:** `test_edi835.py` 28 → `Edi835ParserServiceTest` (+1 exact-cents test) + `Edi835ApiTest` (4); `test_audit_hasher.py` 4 → `AuditHashTest`; `test_claims_schemas.py` 6 → `ClaimStatusMachineTest` (7); `test_appeals_schemas.py` 2 → `AppealApprovalTest` (+4 new). core-api: 79 tests. Python: 93 → 53
+- **Parity proven:** 500 generated EDI 835 files (1,011 claims, awkward amounts like 0.29/1005.07, missing segments) through Python `era_to_denial_summaries` and Java `/edi835/parse` → 0 differences
+- **Removed/updated:** `services/{claims,appeals,audit}/`, 4 Python test files; CI no longer installs/lints `services/audit`; `infra/compose/apisix/bootstrap.sh` routes → `core-api:8080` (gateway stack itself not run — unverified); SETUP.md, STATUS.md
+- **Verified live:** 38/38 signed-in write replays (incl. EDI parse/import and the approval-bypass attempt), 76/76 GET routes; Import page parsed and imported the sample in the browser
 
 ### 2026-11-01 — Step 14: rules engine ported from Python to Java (core-api)
 - `services/core-api/.../service/RulesEngineService.java`: same rules, tables, messages and `source` citations as `services/rules_engine/app/rules.py` (timely filing, denial-code validation, CCI bundling); `today` is a parameter for testability

@@ -15,6 +15,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -23,7 +24,10 @@ import java.util.UUID;
 @RequestMapping("/api/v1/appeals")
 public class AppealController {
 
-    private static final Set<String> APPROVER_ROLES = Set.of("reviewer", "manager", "admin");
+    // Dev-login role names plus their Keycloak equivalents (forwarded by APISIX in production)
+    private static final Set<String> APPROVER_ROLES = Set.of(
+            "reviewer", "manager", "admin",
+            "physician_reviewer", "clinic_admin", "platform_admin");
 
     private final AppealRepository appealRepository;
     private final AuditService auditService;
@@ -83,19 +87,35 @@ public class AppealController {
     }
 
     @PostMapping
-    public Appeal createAppeal(@RequestBody Appeal appeal, HttpServletRequest request) {
+    public ResponseEntity<?> createAppeal(@RequestBody Appeal appeal, HttpServletRequest request) {
         String tenantId = getTenantId(request);
         String userId = getUserId(request);
+
+        if (appeal.getClaimId() == null
+                || claimRepository.findById(appeal.getClaimId()).filter(c -> tenantId.equals(c.getTenantId())).isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("detail", "Claim " + appeal.getClaimId() + " not found"));
+        }
 
         appeal.setId(UUID.randomUUID().toString());
         appeal.setTenantId(tenantId);
         appeal.setCreatedBy(userId);
-        if (appeal.getStatus() == null) appeal.setStatus("draft");
+        // Every appeal starts as a draft that needs human review; approval and sending only happen
+        // through /approve and /send, never from client-supplied fields
+        appeal.setStatus("draft");
+        appeal.setApprovedBy(null);
+        appeal.setApprovedAt(null);
+        appeal.setSentAt(null);
+        appeal.setSentVia(null);
+        appeal.setTrackingNumber(null);
+        List<Appeal> previous = appealRepository.findByTenantIdAndClaimIdOrderByVersionAsc(tenantId, appeal.getClaimId());
+        appeal.setVersion(previous.stream().map(Appeal::getVersion).filter(Objects::nonNull)
+                .max(Integer::compare).orElse(0) + 1);
 
         Appeal saved = appealRepository.save(appeal);
         auditService.writeAudit(tenantId, userId, "appeal.created", "appeal", saved.getId(),
-                "{\"claim_id\":\"" + saved.getClaimId() + "\"}");
-        return saved;
+                "{\"claim_id\":\"" + saved.getClaimId() + "\",\"version\":" + saved.getVersion() + "}");
+        return ResponseEntity.ok(saved);
     }
 
     @RequestMapping(value = "/{id}/approve", method = {RequestMethod.POST, RequestMethod.PATCH})

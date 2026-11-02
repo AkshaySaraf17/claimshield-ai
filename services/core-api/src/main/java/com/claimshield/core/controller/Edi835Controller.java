@@ -9,8 +9,10 @@ import com.claimshield.core.service.ReferenceDataService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
 import java.util.*;
 
 @RestController
@@ -34,12 +36,7 @@ public class Edi835Controller {
 
     @PostMapping("/parse")
     public Map<String, Object> parseEdi835(@RequestBody Map<String, String> body) {
-        String ediContent = body.get("content");
-        if (ediContent == null || ediContent.isBlank()) {
-            return Map.of("error", "content is required");
-        }
-
-        ParsedERA era = parserService.parse835(ediContent);
+        ParsedERA era = parserService.parse835(rawEdi(body));
         List<Map<String, Object>> summaries = parserService.eraToSummaries(era);
 
         Map<String, Object> result = new LinkedHashMap<>();
@@ -48,69 +45,74 @@ public class Edi835Controller {
         result.put("check_number", era.checkNumber());
         result.put("check_date", era.checkDate() != null ? era.checkDate().toString() : null);
         result.put("total_paid_cents", era.totalPaidCents());
-        result.put("claim_count", era.claims().size());
         result.put("segment_count", era.rawSegmentCount());
-        result.put("errors", era.errors());
+        result.put("claims_found", summaries.size());
+        result.put("claim_count", summaries.size());
         result.put("claims", summaries);
+        result.put("errors", era.errors());
         return result;
     }
 
+    /** Creates one workable claim (status pending_review) per remitted claim, as the Python import did. */
     @PostMapping("/import")
+    @Transactional
     public ResponseEntity<Map<String, Object>> importEdi835(@RequestBody Map<String, String> body,
                                                              HttpServletRequest request) {
         String tenantId = getTenantId(request);
         String userId = getUserId(request);
-        String ediContent = body.get("content");
+        ParsedERA era = parserService.parse835(rawEdi(body));
 
-        if (ediContent == null || ediContent.isBlank()) {
-            return ResponseEntity.badRequest().body(Map.of("error", "content is required"));
-        }
-
-        ParsedERA era = parserService.parse835(ediContent);
-        List<Map<String, Object>> imported = new ArrayList<>();
-
+        List<String> createdIds = new ArrayList<>();
         for (ClaimRemittance cr : era.claims()) {
+            String payer = cr.payerName() != null ? cr.payerName() : era.payerName();
+            List<String> codes = cr.denialCodes();
+            String denialCode = codes.isEmpty() ? null : codes.get(0);
+
+            List<String> reasonParts = new ArrayList<>();
+            cr.serviceLines().forEach(svc -> svc.adjustments().forEach(adj -> reasonParts.add(
+                    adj.groupCode() + "-" + adj.reasonCode() + ": $" + dollars(adj.amountCents()))));
+
             Claim claim = new Claim();
             claim.setTenantId(tenantId);
+            claim.setClaimNumber(cr.claimId());
             claim.setPatientName(cr.patientName());
-            claim.setPayer(cr.payerName() != null ? cr.payerName() : era.payerName());
+            claim.setPayer(payer != null ? payer : "Unknown");
+            claim.setDenialCode(denialCode);
+            claim.setDenialReason(reasonParts.isEmpty() ? null : String.join("; ", reasonParts));
+            claim.setRawDenialText("EDI 835 Remittance — Payer: " + (payer != null ? payer : "Unknown")
+                    + ", Claim ID: " + (cr.claimId() != null ? cr.claimId() : "N/A")
+                    + ", Denial code: " + (denialCode != null ? denialCode : "N/A")
+                    + ", Charged: $" + dollars(cr.totalChargeCents())
+                    + ", Paid: $" + dollars(cr.totalPaidCents())
+                    + ", Denied: $" + dollars(cr.totalDeniedCents()));
+            claim.setRawClinicalNotes("Imported from EDI 835 remittance advice");
             claim.setAmountDeniedCents(cr.totalDeniedCents());
-
-            List<String> denialCodes = cr.denialCodes();
-            if (!denialCodes.isEmpty()) {
-                claim.setDenialCode(denialCodes.get(0));
-                claim.setDenialReason(String.join(", ", denialCodes));
-                claim.setStatus("denied");
-            } else {
-                claim.setStatus("paid");
-            }
-
+            claim.setStatus("pending_review");
             claim.setFilingDeadline(referenceDataService.computeDeadline(claim.getPayer()));
             claim.setCreatedBy(userId);
-
             Claim saved = claimRepository.save(claim);
-
-            auditService.writeAudit(tenantId, userId, "claim.imported_from_edi",
-                    "claim", saved.getId(),
-                    "{\"source\":\"edi_835\",\"payer\":\"" + claim.getPayer() + "\"}");
-
-            Map<String, Object> entry = new LinkedHashMap<>();
-            entry.put("id", saved.getId());
-            entry.put("patient_name", saved.getPatientName());
-            entry.put("payer_name", saved.getPayer());
-            entry.put("amount_denied_cents", saved.getAmountDeniedCents());
-            entry.put("status", saved.getStatus());
-            entry.put("denial_code", saved.getDenialCode());
-            imported.add(entry);
+            auditService.writeAudit(tenantId, userId, "claim.created", "claim", saved.getId(),
+                    "{\"source\":\"edi835\"}");
+            createdIds.add(saved.getId());
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("imported_count", imported.size());
+        result.put("imported", createdIds.size());
+        result.put("imported_count", createdIds.size());
+        result.put("claim_ids", createdIds);
         result.put("payer_name", era.payerName());
         result.put("check_number", era.checkNumber());
-        result.put("claims", imported);
-
         return ResponseEntity.status(HttpStatus.CREATED).body(result);
+    }
+
+    /** The dashboard sends raw_edi (Python contract); content is still accepted. */
+    private String rawEdi(Map<String, String> body) {
+        String raw = body.get("raw_edi") != null ? body.get("raw_edi") : body.get("content");
+        return raw != null ? raw : "";
+    }
+
+    private static String dollars(long cents) {
+        return BigDecimal.valueOf(cents, 2).toPlainString();
     }
 
     private String getTenantId(HttpServletRequest request) {

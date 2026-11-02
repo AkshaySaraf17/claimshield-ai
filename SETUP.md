@@ -64,9 +64,7 @@ services/
   core-api/               Java: claims, appeals, audit, documents, EDI 835, rules engine (port 8080)
   analytics-service/      Java: read-only analytics and reports (port 8081)
   workflow-service/       Java: routing rules, preferences, escalations (port 8082)
-  claims/                 Claims service (Postgres, for production)
-  appeals/                Appeals service (Postgres, for production)
-  audit/                  Audit service with hash-chained log (Postgres + Kafka)
+  policy/                 Policy search on pgvector embeddings (Python, AI side)
 packages/py-common/       Shared Python: models, auth, tenancy, events
 infra/compose/            Docker Compose for Postgres, Kafka, Keycloak, etc.
 ```

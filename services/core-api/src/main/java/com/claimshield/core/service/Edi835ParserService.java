@@ -2,6 +2,8 @@ package com.claimshield.core.service;
 
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -45,15 +47,18 @@ public class Edi835ParserService {
                             List<ClaimRemittance> claims, int rawSegmentCount,
                             List<String> errors) {}
 
-    private static long dollarsToCents(String amountStr) {
+    /** Exact decimal → integer cents (no floating point); half-even rounding like the Python parser. */
+    static long dollarsToCents(String amountStr) {
+        if (amountStr == null) return 0;
         try {
-            return Math.round(Double.parseDouble(amountStr) * 100);
-        } catch (NumberFormatException | NullPointerException e) {
+            return new BigDecimal(amountStr.trim()).movePointRight(2)
+                    .setScale(0, RoundingMode.HALF_EVEN).longValueExact();
+        } catch (NumberFormatException | ArithmeticException e) {
             return 0;
         }
     }
 
-    private static LocalDate parseDate(String dateStr) {
+    static LocalDate parseDate(String dateStr) {
         if (dateStr == null || dateStr.length() != 8) return null;
         try {
             return LocalDate.parse(dateStr, DateTimeFormatter.BASIC_ISO_DATE);
