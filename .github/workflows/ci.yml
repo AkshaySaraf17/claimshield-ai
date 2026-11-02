@@ -60,8 +60,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install ruff mypy pydantic pydantic-settings sqlalchemy fastapi python-jose httpx
-      - run: ruff check packages/py-common/ services/audit/
-      - run: ruff format --check packages/py-common/ services/audit/
+      - run: ruff check packages/py-common/
+      - run: ruff format --check packages/py-common/
 
   # --- Python tests ---
   python-test:
@@ -88,7 +88,6 @@ jobs:
           python-version: "3.12"
       - run: |
           pip install -e packages/py-common
-          pip install -e services/audit
           pip install pytest pytest-asyncio httpx
       - run: pytest tests/ -v
         env:

@@ -26,7 +26,7 @@ curl -sf -X PUT "$ADMIN/consumers/claimshield-jwt" \
     "plugins": {}
   }' > /dev/null
 
-# --- Claims service route ---
+# --- Claims routes → Java core-api (the Python claims service was retired) ---
 curl -sf -X PUT "$ADMIN/routes/claims-svc" \
   -H "X-API-KEY: $KEY" \
   -H "Content-Type: application/json" \
@@ -34,7 +34,7 @@ curl -sf -X PUT "$ADMIN/routes/claims-svc" \
     "uri": "/api/v1/claims/*",
     "upstream": {
       "type": "roundrobin",
-      "nodes": { "claims-svc:8000": 1 }
+      "nodes": { "core-api:8080": 1 }
     },
     "plugins": {
       "openid-connect": {
@@ -53,7 +53,7 @@ curl -sf -X PUT "$ADMIN/routes/claims-svc" \
     }
   }' > /dev/null
 
-# --- Appeals service route ---
+# --- Appeals routes → Java core-api (the Python appeals service was retired) ---
 curl -sf -X PUT "$ADMIN/routes/appeals-svc" \
   -H "X-API-KEY: $KEY" \
   -H "Content-Type: application/json" \
@@ -61,7 +61,7 @@ curl -sf -X PUT "$ADMIN/routes/appeals-svc" \
     "uri": "/api/v1/appeals/*",
     "upstream": {
       "type": "roundrobin",
-      "nodes": { "appeals-svc:8000": 1 }
+      "nodes": { "core-api:8080": 1 }
     },
     "plugins": {
       "openid-connect": {
@@ -80,7 +80,7 @@ curl -sf -X PUT "$ADMIN/routes/appeals-svc" \
     }
   }' > /dev/null
 
-# --- Audit service route (auditor read-only) ---
+# --- Audit routes → Java core-api (the Python audit service was retired) ---
 curl -sf -X PUT "$ADMIN/routes/audit-svc" \
   -H "X-API-KEY: $KEY" \
   -H "Content-Type: application/json" \
@@ -88,7 +88,7 @@ curl -sf -X PUT "$ADMIN/routes/audit-svc" \
     "uri": "/api/v1/audit/*",
     "upstream": {
       "type": "roundrobin",
-      "nodes": { "audit-svc:8000": 1 }
+      "nodes": { "core-api:8080": 1 }
     },
     "plugins": {
       "openid-connect": {

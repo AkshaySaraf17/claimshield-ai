@@ -10,7 +10,7 @@ ClaimShield AI is a healthcare claims denial management platform. It helps billi
 - **Java backend:** Spring Boot 3.2.5 / Java 17 microservices: `services/core-api/` (port 8080, also serves the deterministic rules engine at `/api/v1/rules/check`), `services/analytics-service/` (8081), `services/workflow-service/` (8082)
 - **Language split (user decision 2026-11-01):** microservices and core backend → Java; pipelines, data engineering, AI/ML and analytics → Python
 - **Python dev_server:** removed in Phase 5 (2026-11-01); recover from git history (`git show 0363fbb:services/dev_server/main.py`) if you need to check original behaviour
-- **Python AI/ML pipeline (stays):** `services/agents/` (port 8001) — NOT migrating; calls core-api for rules
+- **Python AI/ML pipeline (stays):** `services/agents/` (port 8001) — NOT migrating; calls core-api for rules. Also Python: `services/policy` (RAG/embeddings), `packages/py-common`. Python claims/appeals/audit/rules services were retired into core-api (Phase 7)
 - **Database:** H2 file database in dev (`./data/claimshield`), shared by all Java services
 - **Auth:** NextAuth with Google OAuth + admin credentials + dev login
 
