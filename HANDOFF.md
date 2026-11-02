@@ -1,151 +1,128 @@
 # Handoff
-Last updated: 2026-11-01 | Branch: main | Last commit: 861a5bf Add Java Spring Boot core API and document upload feature
+Last updated: 2026-11-01 | Branch: main | Last commit: 783f2f2 (pending new commit)
 
 ## Project summary
-ClaimShield AI is a healthcare claims denial management platform with 92 dashboard pages (Next.js 15, port 3000), a Python FastAPI monolith being migrated to Java Spring Boot microservices (core-api on port 8080), and a Python AI/ML agent service (port 8001, not migrating). All code lives in a monorepo: `apps/web/` (frontend), `services/core-api/` (Java), `services/dev_server/` (Python, being replaced), `services/agent_service/` (Python AI, stays).
+ClaimShield AI is a healthcare claims denial management platform with 92 dashboard pages (Next.js 15, port 3000), a Java Spring Boot core-api (port 8080) with 15 entities and 13 controllers, a Python FastAPI monolith being replaced (port 8003), and a Python AI/ML agent service (port 8001, not migrating). Monorepo: `apps/web/` (frontend), `services/core-api/` (Java), `services/dev_server/` (Python, being replaced), `services/agent_service/` (Python AI, stays).
 
 ## Current state
 
 ### Done and working
 - **92 Next.js dashboard pages** with collapsible sidebar nav, Google OAuth + admin + dev login via NextAuth
-- **Python dev_server** (`services/dev_server/main.py`): 5358 lines, 125 endpoints, 19 SQLAlchemy models — fully functional, serves all 99 frontend proxy routes on port 8003
-- **Java core-api** (`services/core-api/`, port 8080): Spring Boot 3.2.5, Java 17, H2 file DB
-  - **4 existing entities** with repos + controllers: `Claim`, `Appeal`, `AuditLog`, `Document`
-  - **4 existing controllers**: `ClaimController` (list/get/create/patch/stats), `AppealController` (list/create/approve/send/by-claim), `AuditController` (list/by-resource), `DocumentController` (upload/list/by-claim/types)
-  - **2 services**: `AuditService` (hash-chained SHA-256), `DocumentService` (PDFBox/POI text extraction)
-  - **Config**: `SecurityConfig` (permitAll dev), `DataSeeder` (10 demo claims), `application.yml` (H2 file, CORS)
-  - **Document upload** end-to-end working (drag-and-drop UI → Java backend → PDFBox/POI extraction)
-  - Only 2 of 102 frontend proxy routes point to Java (documents/upload, documents/list); the other 99 still point to Python
+- **Python dev_server** (`services/dev_server/main.py`): 5358 lines, 125 endpoints — fully functional, still serves 99 frontend proxy routes on port 8003
+- **Java core-api** (`services/core-api/`, port 8080): Spring Boot 3.2.5, Java 17, H2 file DB — **massively expanded this session**:
+  - **15 JPA entities** (4 original + 11 new): Claim, Appeal, AuditLog, Document, Tenant, Clinic, ClaimNote, ClaimComment, ClaimAttachment, ClaimTag, ClaimAssignment, ClaimCost, ClaimLink, PayerResponse, ClaimStatusHistory
+  - **15 Spring Data JPA repositories** (4 original + 11 new) — all at `services/core-api/src/main/java/com/claimshield/core/repository/`
+  - **13 REST controllers** (4 original + 9 new):
+    - `ClaimController` — expanded with: search, status transitions with ALLOWED_TRANSITIONS validation (409 on invalid), status-history, timeline, workqueue with urgency scoring, deadlines, batch-transition, duplicates detection, appeal letter generation + batch generation
+    - `AppealController` — list, create, approve, send, by-claim
+    - `AuditController` — list, by-resource
+    - `DocumentController` — upload, list, by-claim, types
+    - `ClaimNoteController` — list/create/delete per claim
+    - `ClaimCommentController` — list/create/delete per claim (threaded via parentId)
+    - `ClaimAttachmentController` — list/create/delete per claim
+    - `ClaimTagController` — list/create/delete per claim + bulk add
+    - `ClaimCostController` — list/create/delete per claim (Long cents)
+    - `ClaimLinkController` — list/create/delete (bidirectional query)
+    - `PayerResponseController` — list/create per claim
+    - `TenantController` — list/get/create
+    - `ClinicController` — list/get/create
+    - `ReferenceController` — denial-codes (searchable), denial-code-reference, denial-prevention-tips, appeal-templates, rules/config, system/health
+  - **3 services**: AuditService (hash-chained SHA-256), DocumentService (PDFBox/POI), ReferenceDataService (NEW — all reference data + appeal letter generator ported from Python)
+  - **DataSeeder** expanded: seeds 10 claims + tenant, 2 clinics, 10 notes, comments, tags, assignments, costs, status history entries
+  - **All endpoints tested with curl** — status transitions, workqueue, timeline, letter generation, reference data all verified working
+  - ~40 new endpoints in this session
 
-### In progress (uncommitted)
-- **11 new JPA entity files written** but NOT yet committed:
-  - `Tenant.java`, `Clinic.java`, `ClaimNote.java`, `ClaimComment.java`, `ClaimAttachment.java`, `ClaimTag.java`, `ClaimAssignment.java`, `ClaimCost.java`, `ClaimLink.java`, `PayerResponse.java`, `ClaimStatusHistory.java`
-  - All at `services/core-api/src/main/java/com/claimshield/core/model/`
-- **Claim.java modified** with 5 new fields: `amountApprovedCents`, `rawDenialText`, `rawClinicalNotes`, `reviewedBy`, `reviewedAt`
-- **No repositories or controllers exist yet** for any of the 11 new entities
-- **Not compiled** — the new entities have not been verified with `mvn clean package`
+### In progress
+- **Phase 1 nearly complete** — remaining: EDI 835 Java parser (Step 6), some secondary claim operations (export/CSV, bulk import, compare, merge, snapshot)
+- No files are half-written; everything compiles and runs
 
 ### Broken or blocked
-- Nothing is broken. The app runs fine with the existing 4 entities + Python fallback. The new entities are additive.
+- Nothing is broken. Java and Python servers coexist. The 99 frontend routes still go to Python.
 
 ## Key decisions and context
 
-1. **3-service architecture** (approved by user):
-   - `core-api` (8080): Claims, Appeals, Audit, Documents, EDI 835, Reference — expanding existing service
-   - `analytics-service` (8081): Read-only analytics/reports — new service, no own entities, reads shared DB
-   - `workflow-service` (8082): Routing, assignments, preferences, contacts — new service, 8 new entities
-2. **Shared H2 file database** in dev mode (`./data/claimshield`) for all 3 Java services
-3. **Python agent service stays** (port 8001) — AI/ML pipeline not migrating
-4. **Python dev_server gets decommissioned** after all endpoints are migrated to Java
-5. **99 frontend proxy routes** in `apps/web/app/api/v1/` need updating from Python (port 8003) to the appropriate Java service
-6. **Full migration plan** is in `.claude/plans/lazy-marinating-quasar.md` — 5 phases, approved by user
-7. **No DTOs** — controllers return entities directly (matches existing pattern)
-8. **No Lombok** — manual getters/setters throughout
-9. **String UUID PKs, String foreign keys** — no JPA relationship annotations
-10. **Project was moved** from `~/Downloads/claimshield-ai` to `~/Documents/claimshield-ai` — the working directory variable may still say Downloads but the git repo is in Documents
+1. **3-service architecture** (approved by user): core-api (8080), analytics-service (8081), workflow-service (8082)
+2. **Shared H2 file database** in dev mode (`./data/claimshield`) for all Java services
+3. **ReferenceDataService** holds all business constants (ALLOWED_TRANSITIONS, PAYER_FILING_DAYS, DENIAL_CODES, APPEAL_TEMPLATES, DENIAL_CODE_TO_CATEGORY) as static data — ported line-by-line from Python `services/dev_server/main.py` lines 107-1447
+4. **Appeal letter generator** is deterministic (no LLM), template-based with 6 categories, each with a `source` field (regulatory citation). Ported from Python `_generate_appeal_letter()`.
+5. **Status transition machine** enforces ALLOWED_TRANSITIONS map and records history in `claim_status_history` table. Invalid transitions return HTTP 409.
+6. **Workqueue** priority scoring: filing deadline proximity (+50/+100), age (+15/+30), needs_review status (+20), pending appeal (+10), high value ≥$10k (+25)
+7. **Controllers use `ResponseEntity<?>`** (not `ResponseEntity<Void>`) for delete methods to avoid Java generics inference issues with lambdas
+8. **Project location**: `~/Documents/claimshield-ai` (moved from Downloads)
+9. **Full migration plan** is in `.claude/plans/lazy-marinating-quasar.md`
 
 ## Next steps (detailed plan)
 
-### Phase 1: Expand core-api (port 8080)
+**Step 1: Port EDI 835 parser to Java**
+- Create `services/core-api/src/main/java/com/claimshield/core/service/Edi835ParserService.java`
+- Create `Edi835Controller.java` with POST `/api/v1/edi835/parse` and POST `/api/v1/edi835/import`
+- Reference: Python parser at `services/dev_server/edi835.py`
+- Done when: parsing a sample EDI 835 file returns structured JSON matching Python output
 
-**Step 1: Compile and verify new entities**
-- Run `mvn clean package` in `services/core-api/` to confirm all 15 entity classes compile
-- Files: all `*.java` under `services/core-api/src/main/java/com/claimshield/core/model/`
-- Done when: `BUILD SUCCESS` with no errors
-- No dependencies
+**Step 2: Add remaining claim operations**
+- Export/CSV: GET `/api/v1/claims/export` and `/api/v1/claims/export/csv`
+- Bulk import: POST `/api/v1/claims/bulk-import`
+- Compare: POST `/api/v1/claims/compare`
+- Merge: POST `/api/v1/claims/merge`
+- Snapshot: GET `/api/v1/claims/{id}/snapshot`
+- Done when: curl tests pass
 
-**Step 2: Create Spring Data JPA repositories for 11 new entities**
-- Create one `*Repository.java` interface per entity in `services/core-api/src/main/java/com/claimshield/core/repository/`
-- Each extends `JpaRepository<EntityName, String>` with tenant-scoped query methods (e.g., `findByTenantId`, `findByTenantIdAndClaimId`)
-- Files: `TenantRepository.java`, `ClinicRepository.java`, `ClaimNoteRepository.java`, `ClaimCommentRepository.java`, `ClaimAttachmentRepository.java`, `ClaimTagRepository.java`, `ClaimAssignmentRepository.java`, `ClaimCostRepository.java`, `ClaimLinkRepository.java`, `PayerResponseRepository.java`, `ClaimStatusHistoryRepository.java`
-- Done when: `mvn clean package` passes
-- Depends on: Step 1
-
-**Step 3: Build CRUD controllers for claims sub-resources**
-- Create controllers for Notes, Comments, Attachments, Tags, Costs, Links, Payer Responses, Status History
-- Each provides GET (list by claim), POST (create), DELETE endpoints under `/api/v1/claims/{claimId}/...`
-- Also create `TenantController` and `ClinicController` for basic CRUD
-- Pattern: constructor-inject repository, read `X-Tenant-Id`/`X-User-Id` headers, audit via AuditService
-- Reference: existing `ClaimController.java` for the pattern
-- Done when: all endpoints return 200 on curl tests
-- Depends on: Step 2
-
-**Step 4: Build complex claims operations**
-- Add to `ClaimController`: search, duplicates, export, CSV export, batch-transition, bulk-import, compare, merge, status transitions (port `ALLOWED_TRANSITIONS` map from Python), timeline, snapshot, priority-scores, workqueue, deadlines
-- Port Python business logic from `services/dev_server/main.py` line-by-line: the status transition map, priority scoring formula, workqueue logic
-- Done when: curl tests pass for each endpoint
-- Depends on: Step 3
-
-**Step 5: Expand appeals endpoints**
-- Add to `AppealController`: preview, templates (port `APPEAL_TEMPLATES` from Python), letter generation (port `_generate_appeal_letter()`), batch letters
-- Port reference data: `DENIAL_CODES`, `DENIAL_CODE_TO_CATEGORY`, `PAYER_FILING_DAYS`
-- Create `ReferenceController` for denial-codes, denial-code-reference, denial-prevention-tips, rules/config
-- Done when: appeal letter generation returns deterministic output matching Python behavior
-- Depends on: Step 3
-
-**Step 6: Port EDI 835 parser**
-- Create Java equivalent of Python `edi835.py` parser
-- Endpoints: POST `/api/v1/edi835/parse`, POST `/api/v1/edi835/import`
-- Done when: parsing a sample EDI 835 file returns the same structured output as the Python version
-- Depends on: Step 3
-
-**Step 7: Expand DataSeeder**
-- Seed all new entity types (notes, comments, tags, assignments, costs, etc.) alongside existing 10 demo claims
-- Done when: starting the app populates all tables visible in H2 console
-- Depends on: Steps 3-6
-
-### Phase 2: Create workflow-service (port 8082)
+**Step 3: Create workflow-service (port 8082) — Phase 2**
 - New Spring Boot project at `services/workflow-service/`
 - 8 entities: RoutingRule, UserPreference, NotificationPreference, CustomTemplate, PayerContact, DashboardBookmark, ClaimWatchlist + reads ClaimAssignment from shared DB
 - ~30 endpoints for routing, assignments, preferences, contacts, watchlists, bookmarks, alerts, escalations
-- Depends on: Phase 1 complete
+- Done when: `mvn clean package` passes and endpoints return data
 
-### Phase 3: Create analytics-service (port 8081)
+**Step 4: Create analytics-service (port 8081) — Phase 3**
 - New Spring Boot project at `services/analytics-service/`
 - Read-only, no own entities, ~25 GET endpoints for all analytics/reports
-- Depends on: Phase 1 complete
+- Reuse core-api entity classes (copy the model package)
+- Done when: analytics endpoints return computed data from shared DB
 
-### Phase 4: Update frontend proxy routes
+**Step 5: Update frontend proxy routes — Phase 4**
 - Change 99 routes in `apps/web/app/api/v1/` from Python (port 8003) to appropriate Java service
-- Depends on: Phases 1-3 complete
+- analytics/* → port 8081, workflow/* → port 8082, everything else → port 8080
+- Done when: all dashboard pages load data from Java services
 
-### Phase 5: Decommission Python dev_server
-- Remove Python dev_server once all routes verified
-- Depends on: Phase 4 complete
+**Step 6: Decommission Python dev_server — Phase 5**
+- Remove Python dev_server once all routes verified through Java
+- Done when: Python server can be stopped and dashboard still works
 
 ## How to verify
 
 ```bash
-# Check repo state
 cd ~/Documents/claimshield-ai
-git status
-git log --oneline -5
 
 # Build Java core-api
 cd services/core-api && mvn clean package
 # Healthy: BUILD SUCCESS
 
-# Start Java core-api
-cd services/core-api && mvn spring-boot:run
-# Healthy: "Started CoreApiApplication" on port 8080
+# Start (delete data/ first for fresh seed)
+rm -f data/claimshield.mv.db && mvn spring-boot:run
+# Healthy: "Started CoreApiApplication" on port 8080, "Found 15 JPA repository interfaces"
 
-# Test existing endpoints
-curl http://localhost:8080/api/v1/claims | jq '.[:1]'
-# Healthy: returns array of claim objects with UUID ids
+# Test key endpoints
+curl -s http://localhost:8080/api/v1/claims | python3 -c "import sys,json; print(len(json.load(sys.stdin)), 'claims')"
+curl -s http://localhost:8080/api/v1/claims/workqueue | python3 -c "import sys,json; print(json.load(sys.stdin)['total'], 'workqueue items')"
+curl -s http://localhost:8080/api/v1/denial-codes | python3 -c "import sys,json; print(len(json.load(sys.stdin)), 'denial codes')"
+curl -s http://localhost:8080/api/v1/rules/config | python3 -c "import sys,json; print('rules config OK')"
+curl -s http://localhost:8080/api/v1/system/health
+# Healthy: all return data, health returns {"status":"ok"}
 
 # Start frontend
-cd apps/web && npm run dev
-# Healthy: "Ready" on port 3000
-
-# Start Python dev server (still needed)
-cd services/dev_server && python main.py
-# Healthy: "Uvicorn running on port 8003"
+cd apps/web && npm run dev  # port 3000
+# Start Python (still needed for 99 routes)
+cd services/dev_server && python main.py  # port 8003
 ```
 
 ## History log
 
-### 2026-11-01 — Initial handoff document
-- Created CLAUDE.md with project rules and handoff protocol
-- Created HANDOFF.md capturing full project state
-- State: 11 new JPA entities written (uncommitted), no repos/controllers for them yet
-- Migration plan approved: 5 phases, currently at Phase 1 Step 1
+### 2026-11-01 — Initial handoff + Phase 1 core-api expansion
+- Created CLAUDE.md and HANDOFF.md with handoff protocol
+- Committed 11 new JPA entities (Tenant, Clinic, ClaimNote, ClaimComment, ClaimAttachment, ClaimTag, ClaimAssignment, ClaimCost, ClaimLink, PayerResponse, ClaimStatusHistory) + expanded Claim entity
+- Created 11 new Spring Data JPA repositories
+- Created 9 new REST controllers: ClaimNoteController, ClaimCommentController, ClaimAttachmentController, ClaimTagController, ClaimCostController, ClaimLinkController, PayerResponseController, TenantController, ClinicController, ReferenceController
+- Created ReferenceDataService with all business constants and appeal letter generator ported from Python
+- Expanded ClaimController with: search, status transitions (ALLOWED_TRANSITIONS), status-history, timeline, workqueue (urgency scoring), deadlines, batch-transition, duplicates, appeal letter generation + batch generation
+- Expanded DataSeeder to seed all new entity types (10 claims + tenant, 2 clinics, notes, comments, tags, assignments, costs, status history)
+- All ~40 new endpoints verified working via curl

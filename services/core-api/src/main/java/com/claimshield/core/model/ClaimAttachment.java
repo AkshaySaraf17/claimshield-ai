@@ -25,7 +25,7 @@ public class ClaimAttachment {
     private String fileType;
 
     @Column(name = "size_bytes")
-    private Integer sizeBytes = 0;
+    private Long sizeBytes = 0L;
 
     @Column(name = "uploaded_by", nullable = false)
     private String uploadedBy;
@@ -52,8 +52,8 @@ public class ClaimAttachment {
     public void setFilename(String filename) { this.filename = filename; }
     public String getFileType() { return fileType; }
     public void setFileType(String fileType) { this.fileType = fileType; }
-    public Integer getSizeBytes() { return sizeBytes; }
-    public void setSizeBytes(Integer sizeBytes) { this.sizeBytes = sizeBytes; }
+    public Long getSizeBytes() { return sizeBytes; }
+    public void setSizeBytes(Long sizeBytes) { this.sizeBytes = sizeBytes; }
     public String getUploadedBy() { return uploadedBy; }
     public void setUploadedBy(String uploadedBy) { this.uploadedBy = uploadedBy; }
     public String getDescription() { return description; }

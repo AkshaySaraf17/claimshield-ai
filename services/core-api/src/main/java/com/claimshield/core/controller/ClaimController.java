@@ -1,48 +1,88 @@
 package com.claimshield.core.controller;
 
-import com.claimshield.core.model.Claim;
-import com.claimshield.core.repository.ClaimRepository;
+import com.claimshield.core.model.*;
+import com.claimshield.core.repository.*;
 import com.claimshield.core.service.AuditService;
+import com.claimshield.core.service.ReferenceDataService;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/v1/claims")
 public class ClaimController {
 
     private final ClaimRepository claimRepository;
+    private final AppealRepository appealRepository;
     private final AuditService auditService;
+    private final ReferenceDataService referenceDataService;
+    private final ClaimStatusHistoryRepository statusHistoryRepository;
+    private final AuditLogRepository auditLogRepository;
+    private final ClaimNoteRepository noteRepository;
 
-    public ClaimController(ClaimRepository claimRepository, AuditService auditService) {
+    public ClaimController(ClaimRepository claimRepository,
+                           AppealRepository appealRepository,
+                           AuditService auditService,
+                           ReferenceDataService referenceDataService,
+                           ClaimStatusHistoryRepository statusHistoryRepository,
+                           AuditLogRepository auditLogRepository,
+                           ClaimNoteRepository noteRepository) {
         this.claimRepository = claimRepository;
+        this.appealRepository = appealRepository;
         this.auditService = auditService;
+        this.referenceDataService = referenceDataService;
+        this.statusHistoryRepository = statusHistoryRepository;
+        this.auditLogRepository = auditLogRepository;
+        this.noteRepository = noteRepository;
     }
 
     @GetMapping
     public List<Claim> listClaims(
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) String search,
             HttpServletRequest request) {
         String tenantId = getTenantId(request);
+        if (search != null && !search.isBlank()) {
+            return claimRepository.findByTenantIdOrderByCreatedAtDesc(tenantId).stream()
+                    .filter(c -> matchesSearch(c, search.toLowerCase()))
+                    .toList();
+        }
         if (status != null && !status.isEmpty()) {
             return claimRepository.findByTenantIdAndStatusOrderByCreatedAtDesc(tenantId, status);
         }
         return claimRepository.findByTenantIdOrderByCreatedAtDesc(tenantId);
     }
 
+    @GetMapping("/search")
+    public List<Claim> searchClaims(@RequestParam String q, HttpServletRequest request) {
+        String tenantId = getTenantId(request);
+        String lower = q.toLowerCase();
+        return claimRepository.findByTenantIdOrderByCreatedAtDesc(tenantId).stream()
+                .filter(c -> matchesSearch(c, lower))
+                .toList();
+    }
+
     @GetMapping("/{id}")
-    public ResponseEntity<Claim> getClaim(@PathVariable String id) {
+    public ResponseEntity<Map<String, Object>> getClaim(@PathVariable String id, HttpServletRequest request) {
         return claimRepository.findById(id)
-                .map(ResponseEntity::ok)
+                .map(claim -> {
+                    Map<String, Object> result = claimToMap(claim);
+                    Set<String> allowed = ReferenceDataService.ALLOWED_TRANSITIONS.getOrDefault(claim.getStatus(), Set.of());
+                    result.put("allowed_transitions", allowed.stream().sorted().toList());
+                    return ResponseEntity.ok(result);
+                })
                 .orElse(ResponseEntity.notFound().build());
     }
 
     @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
     public Claim createClaim(@RequestBody Claim claim, HttpServletRequest request) {
         String tenantId = getTenantId(request);
         String userId = getUserId(request);
@@ -54,6 +94,9 @@ public class ClaimController {
         if (claim.getClaimNumber() == null) {
             claim.setClaimNumber("CLM-" + java.time.Year.now().getValue() + "-" +
                     String.format("%03d", claimRepository.countByTenantId(tenantId) + 1));
+        }
+        if (claim.getFilingDeadline() == null) {
+            claim.setFilingDeadline(referenceDataService.computeDeadline(claim.getPayer()));
         }
 
         Claim saved = claimRepository.save(claim);
@@ -80,9 +123,123 @@ public class ClaimController {
             if (updates.containsKey("assigned_to")) claim.setAssignedTo((String) updates.get("assigned_to"));
             if (updates.containsKey("denial_reason")) claim.setDenialReason((String) updates.get("denial_reason"));
             if (updates.containsKey("payer")) claim.setPayer((String) updates.get("payer"));
+            if (updates.containsKey("denial_code")) claim.setDenialCode((String) updates.get("denial_code"));
+            if (updates.containsKey("raw_denial_text")) claim.setRawDenialText((String) updates.get("raw_denial_text"));
+            if (updates.containsKey("raw_clinical_notes")) claim.setRawClinicalNotes((String) updates.get("raw_clinical_notes"));
+            if (updates.containsKey("reviewed_by")) claim.setReviewedBy((String) updates.get("reviewed_by"));
 
             return ResponseEntity.ok(claimRepository.save(claim));
         }).orElse(ResponseEntity.notFound().build());
+    }
+
+    @PatchMapping("/{id}/status")
+    public ResponseEntity<?> transitionStatus(@PathVariable String id,
+                                              @RequestBody Map<String, String> body,
+                                              HttpServletRequest request) {
+        return claimRepository.findById(id).map(claim -> {
+            String tenantId = getTenantId(request);
+            String userId = getUserId(request);
+            String newStatus = body.get("status");
+            Set<String> allowed = ReferenceDataService.ALLOWED_TRANSITIONS.getOrDefault(claim.getStatus(), Set.of());
+
+            if (!allowed.contains(newStatus)) {
+                return ResponseEntity.status(HttpStatus.CONFLICT)
+                        .body(Map.of("detail", "Cannot transition from '" + claim.getStatus() + "' to '" + newStatus + "'"));
+            }
+
+            String oldStatus = claim.getStatus();
+            claim.setStatus(newStatus);
+            if (body.containsKey("reviewed_by")) {
+                claim.setReviewedBy(body.get("reviewed_by"));
+                claim.setReviewedAt(LocalDateTime.now());
+            }
+
+            ClaimStatusHistory history = new ClaimStatusHistory();
+            history.setTenantId(tenantId);
+            history.setClaimId(id);
+            history.setFromStatus(oldStatus);
+            history.setToStatus(newStatus);
+            history.setChangedBy(userId);
+            history.setReason(body.get("reason"));
+            statusHistoryRepository.save(history);
+
+            claimRepository.save(claim);
+            auditService.writeAudit(tenantId, userId, "claim.status_changed", "claim", id,
+                    "{\"old_status\":\"" + oldStatus + "\",\"new_status\":\"" + newStatus + "\"}");
+
+            return ResponseEntity.ok(claimToMap(claim));
+        }).orElse(ResponseEntity.notFound().build());
+    }
+
+    @GetMapping("/{id}/status-history")
+    public List<ClaimStatusHistory> getStatusHistory(@PathVariable String id, HttpServletRequest request) {
+        return statusHistoryRepository.findByTenantIdAndClaimIdOrderByChangedAtDesc(getTenantId(request), id);
+    }
+
+    @GetMapping("/{id}/timeline")
+    public List<Map<String, Object>> getTimeline(@PathVariable String id, HttpServletRequest request) {
+        String tenantId = getTenantId(request);
+        List<Map<String, Object>> events = new ArrayList<>();
+
+        claimRepository.findById(id).ifPresent(claim -> {
+            events.add(Map.of(
+                    "type", "claim_created",
+                    "timestamp", claim.getCreatedAt().toString(),
+                    "title", "Claim created",
+                    "detail", "Claim " + (claim.getClaimNumber() != null ? claim.getClaimNumber() : id.substring(0, 8)) +
+                            " created — " + claim.getPayer() + ", " + claim.getDenialCode()
+            ));
+
+            if (claim.getFilingDeadline() != null) {
+                events.add(Map.of(
+                        "type", "deadline",
+                        "timestamp", claim.getFilingDeadline().toString(),
+                        "title", "Filing deadline",
+                        "detail", "Deadline for " + claim.getPayer()
+                ));
+            }
+        });
+
+        auditLogRepository.findByTenantIdAndResourceIdOrderByCreatedAtAsc(tenantId, id)
+                .forEach(log -> events.add(Map.of(
+                        "type", "audit",
+                        "timestamp", log.getCreatedAt().toString(),
+                        "title", log.getAction().replace(".", " ").replace("_", " "),
+                        "detail", "By " + log.getActorId(),
+                        "action", log.getAction()
+                )));
+
+        appealRepository.findByClaimIdOrderByCreatedAtDesc(id)
+                .forEach(appeal -> {
+                    events.add(Map.of(
+                            "type", "appeal_created",
+                            "timestamp", appeal.getCreatedAt().toString(),
+                            "title", "Appeal draft",
+                            "detail", "Status: " + appeal.getStatus(),
+                            "appeal_id", appeal.getId()
+                    ));
+                    if (appeal.getApprovedBy() != null) {
+                        events.add(Map.of(
+                                "type", "appeal_approved",
+                                "timestamp", (appeal.getApprovedAt() != null ? appeal.getApprovedAt() : appeal.getCreatedAt()).toString(),
+                                "title", "Appeal approved",
+                                "detail", "Approved by " + appeal.getApprovedBy(),
+                                "appeal_id", appeal.getId()
+                        ));
+                    }
+                });
+
+        noteRepository.findByTenantIdAndClaimIdOrderByCreatedAtDesc(tenantId, id)
+                .forEach(note -> events.add(Map.of(
+                        "type", "note",
+                        "timestamp", note.getCreatedAt().toString(),
+                        "title", "Note added",
+                        "detail", note.getContent().length() > 120 ? note.getContent().substring(0, 120) + "..." : note.getContent(),
+                        "author", note.getAuthorId()
+                )));
+
+        events.sort(Comparator.comparing(e -> e.get("timestamp").toString()));
+        return events;
     }
 
     @GetMapping("/stats")
@@ -97,14 +254,231 @@ public class ClaimController {
         long pendingReview = claims.stream().filter(c -> "pending_review".equals(c.getStatus()) || "needs_review".equals(c.getStatus())).count();
 
         return Map.of(
-            "total_claims", claims.size(),
-            "total_denied_cents", totalDenied,
-            "total_recovered_cents", totalRecovered,
-            "won", won,
-            "lost", lost,
-            "pending_review", pendingReview,
-            "win_rate", (won + lost) > 0 ? (double) won / (won + lost) : 0.0
+                "total_claims", claims.size(),
+                "total_denied_cents", totalDenied,
+                "total_recovered_cents", totalRecovered,
+                "won", won,
+                "lost", lost,
+                "pending_review", pendingReview,
+                "win_rate", (won + lost) > 0 ? (double) won / (won + lost) : 0.0
         );
+    }
+
+    @GetMapping("/workqueue")
+    public Map<String, Object> workqueue(HttpServletRequest request) {
+        String tenantId = getTenantId(request);
+        LocalDateTime now = LocalDateTime.now();
+        List<Claim> claims = claimRepository.findByTenantIdOrderByCreatedAtDesc(tenantId).stream()
+                .filter(c -> Set.of("pending_review", "in_progress", "needs_review").contains(c.getStatus()))
+                .toList();
+
+        Set<String> pendingAppealClaimIds = appealRepository.findByTenantIdAndStatus(tenantId, "draft").stream()
+                .map(Appeal::getClaimId)
+                .collect(Collectors.toSet());
+
+        List<Map<String, Object>> items = claims.stream().map(c -> {
+            int urgency = 0;
+            List<String> reasons = new ArrayList<>();
+
+            if (c.getFilingDeadline() != null) {
+                long daysLeft = ChronoUnit.DAYS.between(now, c.getFilingDeadline());
+                if (daysLeft <= 3) { urgency += 100; reasons.add(daysLeft + "d to deadline"); }
+                else if (daysLeft <= 7) { urgency += 50; reasons.add(daysLeft + "d to deadline"); }
+            }
+
+            long ageDays = c.getCreatedAt() != null ? ChronoUnit.DAYS.between(c.getCreatedAt(), now) : 0;
+            if (ageDays >= 14) { urgency += 30; reasons.add(ageDays + "d old"); }
+            else if (ageDays >= 7) { urgency += 15; reasons.add(ageDays + "d old"); }
+
+            if ("needs_review".equals(c.getStatus())) { urgency += 20; reasons.add("needs review"); }
+            if (pendingAppealClaimIds.contains(c.getId())) { urgency += 10; reasons.add("appeal pending"); }
+            if (c.getAmountDeniedCents() != null && c.getAmountDeniedCents() >= 1_000_000) { urgency += 25; reasons.add("high value"); }
+
+            Map<String, Object> item = new LinkedHashMap<>(claimToMap(c));
+            item.put("urgency_score", urgency);
+            item.put("urgency_reasons", reasons);
+            item.put("has_pending_appeal", pendingAppealClaimIds.contains(c.getId()));
+            item.put("age_days", ageDays);
+            item.put("allowed_transitions", ReferenceDataService.ALLOWED_TRANSITIONS.getOrDefault(c.getStatus(), Set.of()).stream().sorted().toList());
+            return item;
+        }).sorted(Comparator.comparingInt((Map<String, Object> m) -> (int) m.get("urgency_score")).reversed()).toList();
+
+        return Map.of("items", items, "total", items.size());
+    }
+
+    @GetMapping("/deadlines")
+    public List<Map<String, Object>> deadlines(HttpServletRequest request) {
+        String tenantId = getTenantId(request);
+        return claimRepository.findByTenantIdOrderByCreatedAtDesc(tenantId).stream()
+                .filter(c -> c.getFilingDeadline() != null && !Set.of("won", "lost", "cancelled").contains(c.getStatus()))
+                .sorted(Comparator.comparing(Claim::getFilingDeadline))
+                .map(c -> {
+                    long daysLeft = ChronoUnit.DAYS.between(LocalDateTime.now(), c.getFilingDeadline());
+                    Map<String, Object> m = new LinkedHashMap<>(claimToMap(c));
+                    m.put("days_until_deadline", daysLeft);
+                    m.put("is_urgent", daysLeft <= 7);
+                    return m;
+                })
+                .toList();
+    }
+
+    @PostMapping("/batch-transition")
+    @Transactional
+    public List<Map<String, Object>> batchTransition(@RequestBody Map<String, Object> body,
+                                                     HttpServletRequest request) {
+        String tenantId = getTenantId(request);
+        String userId = getUserId(request);
+        String newStatus = (String) body.get("status");
+        @SuppressWarnings("unchecked")
+        List<String> claimIds = (List<String>) body.get("claim_ids");
+
+        List<Map<String, Object>> results = new ArrayList<>();
+        for (String cid : claimIds) {
+            claimRepository.findById(cid).ifPresentOrElse(claim -> {
+                Set<String> allowed = ReferenceDataService.ALLOWED_TRANSITIONS.getOrDefault(claim.getStatus(), Set.of());
+                if (allowed.contains(newStatus)) {
+                    String oldStatus = claim.getStatus();
+                    claim.setStatus(newStatus);
+                    claimRepository.save(claim);
+
+                    ClaimStatusHistory history = new ClaimStatusHistory();
+                    history.setTenantId(tenantId);
+                    history.setClaimId(cid);
+                    history.setFromStatus(oldStatus);
+                    history.setToStatus(newStatus);
+                    history.setChangedBy(userId);
+                    statusHistoryRepository.save(history);
+
+                    auditService.writeAudit(tenantId, userId, "claim.status_changed", "claim", cid,
+                            "{\"old_status\":\"" + oldStatus + "\",\"new_status\":\"" + newStatus + "\"}");
+                    results.add(Map.of("claim_id", cid, "success", true, "new_status", newStatus));
+                } else {
+                    results.add(Map.of("claim_id", cid, "success", false, "error",
+                            "Cannot transition from '" + claim.getStatus() + "' to '" + newStatus + "'"));
+                }
+            }, () -> results.add(Map.of("claim_id", cid, "success", false, "error", "Not found")));
+        }
+        return results;
+    }
+
+    @GetMapping("/duplicates")
+    public List<Map<String, Object>> findDuplicates(HttpServletRequest request) {
+        String tenantId = getTenantId(request);
+        List<Claim> claims = claimRepository.findByTenantIdOrderByCreatedAtDesc(tenantId);
+        List<Map<String, Object>> groups = new ArrayList<>();
+
+        Map<String, List<Claim>> byKey = claims.stream()
+                .filter(c -> c.getPatientId() != null && c.getDenialCode() != null)
+                .collect(Collectors.groupingBy(c -> c.getPatientId() + "|" + c.getDenialCode() + "|" + c.getPayer()));
+
+        byKey.values().stream()
+                .filter(group -> group.size() > 1)
+                .forEach(group -> groups.add(Map.of(
+                        "patient_id", group.get(0).getPatientId(),
+                        "denial_code", group.get(0).getDenialCode(),
+                        "payer", group.get(0).getPayer(),
+                        "count", group.size(),
+                        "claims", group.stream().map(this::claimToMap).toList()
+                )));
+        return groups;
+    }
+
+    @PostMapping("/appeal-letters/generate")
+    public Map<String, Object> generateAppealLetter(@RequestBody Map<String, String> body,
+                                                     HttpServletRequest request) {
+        String claimId = body.get("claim_id");
+        return claimRepository.findById(claimId)
+                .map(claim -> {
+                    String category = body.get("template_category");
+                    if (category == null || category.isBlank()) {
+                        category = ReferenceDataService.DENIAL_CODE_TO_CATEGORY.getOrDefault(
+                                claim.getDenialCode(), "Medical Necessity");
+                    }
+
+                    Map<String, Object> claimData = claimToMap(claim);
+                    String letter = referenceDataService.generateAppealLetter(claimData, category);
+
+                    return Map.<String, Object>of(
+                            "claim_id", claimId,
+                            "template_category", category,
+                            "letter_text", letter,
+                            "source", ReferenceDataService.APPEAL_TEMPLATES.containsKey(category) ?
+                                    ReferenceDataService.APPEAL_TEMPLATES.get(category).source() : "N/A",
+                            "generated_at", LocalDateTime.now().toString()
+                    );
+                })
+                .orElse(Map.of("detail", "Claim not found"));
+    }
+
+    @PostMapping("/appeal-letters/batch")
+    public Map<String, Object> batchGenerateLetters(@RequestBody Map<String, Object> body,
+                                                     HttpServletRequest request) {
+        String tenantId = getTenantId(request);
+        @SuppressWarnings("unchecked")
+        List<String> claimIds = (List<String>) body.get("claim_ids");
+        String templateCategory = (String) body.get("template_category");
+
+        List<Map<String, Object>> results = new ArrayList<>();
+        for (String cid : claimIds.subList(0, Math.min(claimIds.size(), 20))) {
+            claimRepository.findById(cid).ifPresentOrElse(claim -> {
+                if (!tenantId.equals(claim.getTenantId())) {
+                    results.add(Map.of("claim_id", cid, "error", "Claim not found"));
+                    return;
+                }
+                String category = templateCategory;
+                if (category == null || category.isBlank()) {
+                    category = ReferenceDataService.DENIAL_CODE_TO_CATEGORY.getOrDefault(
+                            claim.getDenialCode(), "Medical Necessity");
+                }
+                String letter = referenceDataService.generateAppealLetter(claimToMap(claim), category);
+                results.add(Map.of(
+                        "claim_id", cid,
+                        "claim_number", claim.getClaimNumber() != null ? claim.getClaimNumber() : "",
+                        "template_category", category,
+                        "letter_text", letter,
+                        "source", ReferenceDataService.APPEAL_TEMPLATES.containsKey(category) ?
+                                ReferenceDataService.APPEAL_TEMPLATES.get(category).source() : "N/A"
+                ));
+            }, () -> results.add(Map.of("claim_id", cid, "error", "Claim not found")));
+        }
+        return Map.of("results", results, "total", results.size());
+    }
+
+    private boolean matchesSearch(Claim c, String q) {
+        return (c.getPayer() != null && c.getPayer().toLowerCase().contains(q))
+                || (c.getDenialCode() != null && c.getDenialCode().toLowerCase().contains(q))
+                || (c.getDenialReason() != null && c.getDenialReason().toLowerCase().contains(q))
+                || (c.getClaimNumber() != null && c.getClaimNumber().toLowerCase().contains(q))
+                || (c.getPatientName() != null && c.getPatientName().toLowerCase().contains(q))
+                || (c.getPatientId() != null && c.getPatientId().toLowerCase().contains(q));
+    }
+
+    private Map<String, Object> claimToMap(Claim c) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", c.getId());
+        m.put("tenantId", c.getTenantId());
+        m.put("claimNumber", c.getClaimNumber());
+        m.put("patientName", c.getPatientName());
+        m.put("patientId", c.getPatientId());
+        m.put("payer", c.getPayer());
+        m.put("denialCode", c.getDenialCode());
+        m.put("denialReason", c.getDenialReason());
+        m.put("rawDenialText", c.getRawDenialText());
+        m.put("rawClinicalNotes", c.getRawClinicalNotes());
+        m.put("amountDeniedCents", c.getAmountDeniedCents());
+        m.put("amountRecoveredCents", c.getAmountRecoveredCents());
+        m.put("amountApprovedCents", c.getAmountApprovedCents());
+        m.put("status", c.getStatus());
+        m.put("reviewedBy", c.getReviewedBy());
+        m.put("reviewedAt", c.getReviewedAt() != null ? c.getReviewedAt().toString() : null);
+        m.put("filingDeadline", c.getFilingDeadline() != null ? c.getFilingDeadline().toString() : null);
+        m.put("assignedTo", c.getAssignedTo());
+        m.put("clinicId", c.getClinicId());
+        m.put("clinicName", c.getClinicName());
+        m.put("createdBy", c.getCreatedBy());
+        m.put("createdAt", c.getCreatedAt() != null ? c.getCreatedAt().toString() : null);
+        m.put("updatedAt", c.getUpdatedAt() != null ? c.getUpdatedAt().toString() : null);
+        return m;
     }
 
     private String getTenantId(HttpServletRequest request) {
